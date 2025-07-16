@@ -12,6 +12,22 @@ class TransformerBlock(nn.Module):
     def forward(self, x, key_padding_mask=None):  # x: [B, N, D]
         return self.encoder(x, src_key_padding_mask=key_padding_mask)
 
+class SceneLatentDecoder(nn.Module):
+    def __init__(self, latent_dim=64, token_dim=64, num_tokens=32, depth=4):
+        super().__init__()
+        self.query_embed = nn.Parameter(torch.randn(1, num_tokens, token_dim))
+        layer = nn.TransformerDecoderLayer(token_dim, nhead=4, batch_first=True)
+        self.decoder = nn.TransformerDecoder(layer, num_layers=depth)
+        self.output_proj = nn.Linear(token_dim, token_dim)
+
+    def forward(self, z_root):  # [B, D]
+        B = z_root.size(0)
+        memory = z_root.unsqueeze(1)  # [B, 1, D]
+        query = self.query_embed.expand(B, -1, -1)  # [B, N, D]
+        out = self.decoder(query, memory)
+        return self.output_proj(out)  # [B, N, D]
+
+
 
 class RootDecoder(nn.Module):
     def __init__(self, latent_dim, token_dim, num_tokens):
