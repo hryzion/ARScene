@@ -4,12 +4,12 @@ import numpy as np
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 class ThreeDFrontDataset(Dataset):
-    def __init__(self, npz_dir, transform=None):
+    def __init__(self, npz_dir, transform=None, split='train'):
         """
         :param npz_dir: 包含 .npz 文件的目录
         :param transform: 可选的 transform 用于后处理
         """
-        self.npz_dir = npz_dir
+        self.npz_dir = os.path.join(npz_dir,split)
         self.file_list = [f for f in os.listdir(npz_dir) if f.endswith('.npz')]
         self.transform = transform
 
