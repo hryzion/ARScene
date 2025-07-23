@@ -102,9 +102,9 @@ def train_model(
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), save_path)
-            print(f"✅ Best model saved at epoch {epoch+1} with val_loss={best_val_loss:.4f}")
+            print(f"Best model saved at epoch {epoch+1} with val_loss={best_val_loss:.4f}")
 
-    print("🎉 Training Complete.")
+    print(" Training Complete.")
 
 
 if __name__ == '__main__':
