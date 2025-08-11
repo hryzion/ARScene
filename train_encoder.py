@@ -1,5 +1,5 @@
 import torch
-from networks.roomlayout import RoomLayoutVQVAE
+from networks.roomlayout.RoomLayoutVQVAE import RoomLayoutVQVAE
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 import torch
 import torch.nn as nn
@@ -41,17 +41,14 @@ def train_model(
         train_recon_loss = 0
 
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]"):
-            room_type = batch['room_type'].to(device)
+            # room_type = batch['room_type'].to(device)
             room_shape = batch['room_shape'].to(device)
             obj_tokens = batch['obj_tokens'].to(device)
             attention_mask = batch['attention_mask'].to(device)
 
-            B, N, T = obj_tokens.shape
-            input_tokens = obj_tokens.view(B, N * T, -1)  # flatten last dim if needed
-
             optimizer.zero_grad()
-            recon, vq_loss, _ = model(input_tokens, padding_mask=attention_mask)
-            recon_loss = criterion(recon, input_tokens)
+            root, recon, vq_loss, _ = model(obj_tokens, padding_mask=attention_mask)
+            recon_loss = criterion(recon, obj_tokens)
 
             loss = recon_loss + beta * vq_loss
             loss.backward()
@@ -75,16 +72,15 @@ def train_model(
 
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
-                room_type = batch['room_type'].to(device)
+                # room_type = batch['room_type'].to(device)
                 room_shape = batch['room_shape'].to(device)
-                obj_tokens = batch['obj_tokens'].to(device)
+                obj_tokens = batch['obj_tokens'].to(device) # [B, maxN, T]
                 attention_mask = batch['attention_mask'].to(device)
 
-                B, N, T = obj_tokens.shape
-                input_tokens = obj_tokens.view(B, N * T, -1)
+                
 
-                recon, vq_loss, _ = model(input_tokens, padding_mask=attention_mask)
-                recon_loss = criterion(recon, input_tokens)
+                root, recon, vq_loss, _ = model(obj_tokens, padding_mask=attention_mask)
+                recon_loss = criterion(recon, obj_tokens)
 
                 loss = recon_loss + beta * vq_loss
 
@@ -110,11 +106,11 @@ def train_model(
 if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    train_dataset = ThreeDFrontDataset(split='train')
-    val_dataset = ThreeDFrontDataset(split='val')
-
+    train_dataset = ThreeDFrontDataset(npz_dir='./datasets/processed',split='train')
+    val_dataset = ThreeDFrontDataset(npz_dir='./datasets/processed',split='test')
+   
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=True, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
     model = RoomLayoutVQVAE().to(device)
     train_model(model, train_loader, val_loader, device)

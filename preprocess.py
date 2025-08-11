@@ -5,7 +5,7 @@ from config import DATA_DIR
 from utils import load_scene_json, divide_scene_json_to_rooms, get_room_attributes
 import random
 import numpy as np
-TARGET_DIR = 'path/to/target/directory'
+TARGET_DIR = './datasets/processed'
 
 def preprocess_3d_front():
     for scene_json_file in tqdm.tqdm(os.listdir(DATA_DIR)):
@@ -20,6 +20,7 @@ def preprocess_3d_front():
         rooms = divide_scene_json_to_rooms(scene_json)
         
         for idx, room in enumerate(rooms):
+            # print(room)
             room_info, obj_tokens = get_room_attributes(room)
             # Save or process the room_matrix as needed
             # For example, save to a file or database
@@ -36,8 +37,11 @@ def preprocess_3d_front():
             np.savez_compressed(
                 os.path.join(room_dir, 'room_data.npz'),
                 room_type=room_info['room_type'],
-                room_shape = room_info['room_shape'],
                 obj_tokens=obj_tokens                   # N, D
             )
 
+            room_info['room_shape'].save(os.path.join(room_dir, 'room_mask.png'))
+
     
+if __name__ == "__main__":
+    preprocess_3d_front()

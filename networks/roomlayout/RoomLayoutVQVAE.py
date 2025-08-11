@@ -39,19 +39,25 @@ class VectorQuantizer(nn.Module):
         return z_q, loss, indices.view(z.shape[0], z.shape[1])
 
 class SceneLayoutTokenEncoder(nn.Module):
-    def __init__(self, token_dim=64, depth=4, heads=4):
+    def __init__(self, token_dim = 64, depth=4, heads=4 ,attr_dim = 46):
         super().__init__()
         # root
         self.token_dim = token_dim
         self.root_token = nn.Parameter(torch.randn(1, 1, token_dim))  # [1, 1, D]
+
+        # embedding
+        self.input_proj = nn.Linear(attr_dim, token_dim)
+        
         # encoder
         self.encoder = TransformerBlock(token_dim, depth, heads)
 
     def forward(self, x, padding_mask=None):  # x: [B, N, D]
+        x = self.input_proj(x)
         B, N, D = x.shape
-
+        
         # Add root token
         root = self.root_token.expand(B, 1, D)  # [B, 1, D]
+        
         x_cat = torch.cat([root, x], dim=1)     # [B, N+1, D]
 
         # Extend mask for root token (not masked)
@@ -60,12 +66,15 @@ class SceneLayoutTokenEncoder(nn.Module):
         return z
     
 class SceneLayoutTokenDecoder(nn.Module):
-    def __init__(self, token_dim=64, depth=4, heads=4):
+    def __init__(self, token_dim=64, depth=4, heads=4,attr_dim = 46):
         super().__init__()
         self.decoder = TransformerBlock(token_dim, depth, heads)
+        self.output_proj = nn.Linear(token_dim, attr_dim)
 
     def forward(self, z_q, padding_mask = None):  # z_q: [B, N+1, D]
-        return self.decoder(z_q, key_padding_mask=padding_mask)  # [B, N+1, D]
+        mask_cat = F.pad(padding_mask, (1, 0), value=False)  # [B, N+1]
+        x = self.decoder(z_q, key_padding_mask=mask_cat)
+        return self.output_proj(x)  # [B, N+1, D]
         
 
 
@@ -80,10 +89,12 @@ class RoomLayoutVQVAE(nn.Module):
 
 
     def forward(self, x, padding_mask=None):  # x: [B, N, D], mask: [B, N]
-        z = self.encoder(x, key_padding_mask=padding_mask) # B, N+1, D
+        z = self.encoder(x, padding_mask=padding_mask) # B, N+1, D
         z_q, vq_loss, indices = self.quantizer(z) # B, N+1, D   
-        recon = self.decoder(z_q, key_padding_mask=padding_mask) 
-        return recon, vq_loss, indices
+        x = self.decoder(z_q, padding_mask=padding_mask) 
+        root = x[:, :1, :]    # B, 1, D
+        recon = x[:, 1:, :]   # B, N, D
+        return root, recon, vq_loss, indices
 
 def compute_loss(model, x, padding_mask):
     """

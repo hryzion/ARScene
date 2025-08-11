@@ -11,6 +11,6 @@ def parse_arguments():
     return args
 
 
-DATA_DIR = rf"D:\zhx_workspace\3DScenePlatformDev\dataset\Levels2021"
-
+DATA_DIR = '../3DFront/scenes'#rf"D:\zhx_workspace\3DScenePlatformDev\dataset\Levels2021"
+OBJ_DIR = '../3DFront/objects'
 
