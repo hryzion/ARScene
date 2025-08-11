@@ -21,8 +21,13 @@ class VectorQuantizer(nn.Module):
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
         self.embedding_dim = embedding_dim
         self.beta = beta
+        self.num_embeddings = num_embeddings
 
         self.embedding.weight.data.uniform_(-1 / num_embeddings, 1 / num_embeddings)
+
+
+        self.last_usage_rate = 0.0
+        self.last_unique_codes = None
 
     def forward(self, z):  # z: [B, N, D]
         flat_z = z.view(-1, self.embedding_dim)
@@ -36,6 +41,12 @@ class VectorQuantizer(nn.Module):
 
         loss = F.mse_loss(z_q.detach(), z) + self.beta * F.mse_loss(z_q, z.detach())
         z_q = z + (z_q - z).detach()  # straight-through trick
+
+        with torch.no_grad():
+            unique_codes = torch.unique(indices)
+            self.last_usage_rate = unique_codes.numel() / self.num_embeddings
+            self.last_unique_codes = unique_codes
+
         return z_q, loss, indices.view(z.shape[0], z.shape[1])
 
 class SceneLayoutTokenEncoder(nn.Module):

@@ -1,7 +1,8 @@
 import json
 import numpy as np
 from PIL import Image, ImageDraw
-
+import matplotlib.patches as patches
+import matplotlib.pyplot as plt
 
 def get_room_attributes(room):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
@@ -59,6 +60,83 @@ def decode_obj_token(obj_token):
         'scale': scale.tolist()
     }
 
+def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask):
+    """
+    batch_obj_tokens: [B, N, token_dim], torch.Tensor 或 numpy array
+    attention_mask: [B, N], bool tensor，True 表示有效token
+    返回二维列表，忽略mask为False的token
+    """
+    B, N = batch_obj_tokens.shape[:2]
+    batch_obj_tokens = batch_obj_tokens.cpu().numpy()  # 方便用 numpy 解码
+    attention_mask = attention_mask.cpu().numpy()
+    
+    decoded = []
+    for b in range(B):
+        decoded_b = []
+        for n in range(N):
+            if attention_mask[b, n]:
+                decoded_b.append(decode_obj_token(batch_obj_tokens[b, n]))
+            else:
+                # mask为False的token忽略或填None，视需要而定
+                pass
+        decoded.append(decoded_b) ## [[obj1, obj2, ...], [obj1, obj2, ...], ...]
+    return decoded
+
+
+def visualize_result(recon_data):
+    """
+    recon_data: List[List[obj_dict]]
+    每个obj_dict形如:
+    {
+        'coarseSemantic': str,
+        'bbox': {'max': [x,y,z], 'min': [x,y,z]},
+        'translate': [...],
+        'rotation': [...],
+        'scale': [...]
+    }
+    """
+    N = len(recon_data)  # batch size
+
+    fig, axes = plt.subplots(1, N, figsize=(5*N, 5))
+    if N == 1:
+        axes = [axes]  # 统一成list方便遍历
+
+    for idx, scene in enumerate(recon_data):
+        ax = axes[idx]
+        ax.set_title(f"Scene {idx}")
+        ax.set_xlabel("X")
+        ax.set_ylabel("Z")
+        ax.set_aspect('equal', adjustable='box')
+
+        # 遍历该场景的每个物体
+        for obj in scene:
+            cat = obj['coarseSemantic']
+            color = get_category_color(cat)
+
+            bbox_min = np.array(obj['bbox']['min'])
+            bbox_max = np.array(obj['bbox']['max'])
+
+            # 投影到 XZ 平面（取 X 和 Z 坐标范围）
+            x_min, z_min = bbox_min[0], bbox_min[1]
+            x_max, z_max = bbox_max[0], bbox_max[1]
+            width = x_max - x_min
+            height = z_max - z_min
+
+            rect = patches.Rectangle(
+                (x_min, z_min),
+                width, height,
+                linewidth=1,
+                edgecolor=color,
+                facecolor=color,
+                alpha=0.5
+            )
+            ax.add_patch(rect)
+
+        ax.grid(True)
+
+    plt.tight_layout()
+    plt.show()
+
 def load_scene_json(scene_json_path):
     with open(scene_json_path, 'r') as file:
         scene_json = json.load(file)
@@ -79,7 +157,41 @@ def divide_scene_json_to_rooms(scene_json):
 
 THREED_FRONT_FURNITURE = {'Barstool': 'stool', 'Bookcase / jewelry Armoire': 'bookshelf', 'Bunk Bed': 'bunk_bed', 'Ceiling Lamp': 'ceiling_lamp', 'Chaise Longue Sofa': 'chaise_longue_sofa', 'Children Cabinet': 'cabinet', 'Classic Chinese Chair': 'chinese_chair', 'Coffee Table': 'coffee_table', 'Corner/Side Table': 'corner_side_table', 'Desk': 'desk', 'Dining Chair': 'dining_chair', 'Dining Table': 'dining_table', 'Drawer Chest / Corner cabinet': 'cabinet', 'Dressing Chair': 'dressing_chair', 'Dressing Table': 'dressing_table', 'Footstool / Sofastool / Bed End Stool / Stool': 'stool', 'Kids Bed': 'kids_bed', 'King-size Bed': 'double_bed', 'L-shaped Sofa': 'l_shaped_sofa', 'Lazy Sofa': 'lazy_sofa', 'Lounge Chair / Cafe Chair / Office Chair': 'lounge_chair', 'Loveseat Sofa': 'loveseat_sofa', 'Nightstand': 'nightstand', 'Pendant Lamp': 'pendant_lamp', 'Round End Table': 'round_end_table', 'Shelf': 'shelf', 'Sideboard / Side Cabinet / Console table': 'console_table', 'Single bed': 'single_bed', 'TV Stand': 'multi_seat_sofa', 'Three-seat / Multi-seat Sofa': 'tv_stand', 'Wardrobe': 'wardrobe', 'Wine Cabinet': 'wine_cabinet', 'Armchair': 'armchair', 'armchair': 'armchair'}
 THREED_FRONT_CATEGORY = ['dressing_table', 'console_table', 'round_end_table', 'chaise_longue_sofa', 'kids_bed', 'dressing_chair', 'tv_stand', 'bookshelf', 'lazy_sofa', 'dining_table', 'wardrobe', 'corner_side_table', 'armchair', 'chinese_chair', 'cabinet', 'nightstand', 'multi_seat_sofa', 'loveseat_sofa', 'stool', 'l_shaped_sofa', 'double_bed', 'bunk_bed', 'pendant_lamp', 'lounge_chair', 'dining_chair', 'single_bed', 'ceiling_lamp', 'wine_cabinet', 'coffee_table', 'shelf', 'desk']
-
+THREED_FRONT_COLOR  = [
+    (0.121, 0.466, 0.705),
+    (1.000, 0.498, 0.054),
+    (0.172, 0.627, 0.172),
+    (0.839, 0.152, 0.156),
+    (0.580, 0.404, 0.741),
+    (0.549, 0.337, 0.294),
+    (0.890, 0.467, 0.761),
+    (0.498, 0.498, 0.498),
+    (0.737, 0.741, 0.133),
+    (0.090, 0.745, 0.811),
+    (0.682, 0.780, 0.909),
+    (1.000, 0.733, 0.470),
+    (0.596, 0.875, 0.541),
+    (1.000, 0.596, 0.588),
+    (0.773, 0.690, 0.835),
+    (0.769, 0.600, 0.580),
+    (0.968, 0.713, 0.824),
+    (0.780, 0.780, 0.780),
+    (0.858, 0.859, 0.553),
+    (0.619, 0.854, 0.898),
+    (0.415, 0.239, 0.603),
+    (0.533, 0.141, 0.521),
+    (0.000, 0.447, 0.698),
+    (0.741, 0.200, 0.643),
+    (0.635, 0.078, 0.184),
+    (0.850, 0.372, 0.007),
+    (0.568, 0.118, 0.118),
+    (0.214, 0.494, 0.721),
+    (0.596, 0.306, 0.639),
+    (0.439, 0.678, 0.278),
+    (0.870, 0.494, 0.000),
+    (0.654, 0.364, 0.270),
+    (0.000, 0.620, 0.451),
+]
 
 def centralize_room(room):
     bbox = find_bbox_from_room_shape(room['roomShape'])
@@ -161,6 +273,18 @@ def find_bbox_from_room_shape(room_shape):
     max_coords = points.max(axis=0).tolist()
     
     return {'min': [min_coords[0],0,min_coords[1]], 'max': [max_coords[0], 2.8, max_coords[1]]}
+
+def get_category_color(category):
+    """
+    根据类别名称返回对应的颜色。
+    如果类别不存在于预定义列表中，则返回默认颜色。
+    """
+    global THREED_FRONT_CATEGORY, THREED_FRONT_COLOR
+    if category in THREED_FRONT_CATEGORY:
+        index = THREED_FRONT_CATEGORY.index(category)
+        return THREED_FRONT_COLOR[index]
+    else:
+        return (0.5, 0.5, 0.5)  # 默认灰色
 
 if __name__ == "__main__":
     print(len(THREED_FRONT_FURNITURE))
