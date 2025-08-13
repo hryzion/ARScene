@@ -42,8 +42,10 @@ class ThreeDFrontDataset(Dataset):
         room_shape = transform(room_shape)
         obj_tokens = torch.from_numpy(obj_tokens)
         # print(obj_tokens.shape)
-
+        name = self.file_list[idx].split('_')[:2]
+        name = '_'.join(name)
         sample = {
+            'room_name': name,
             'room_type': room_type,
             'room_shape': room_shape,
             'obj_tokens': obj_tokens
@@ -75,6 +77,7 @@ class ThreeDFrontDataset(Dataset):
         
 
         return {
+            'room_name': [sample['room_name'] for sample in samples],  # [B]
             'room_type': room_types,                  # [B]
             'room_shape': room_shapes,                # [B, D] or [B, N, D]
             'obj_tokens': padded_obj_tokens,           # [B, max_num_objects, T]

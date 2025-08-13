@@ -36,15 +36,18 @@ def main():
     # 3. 推理并可视化结果
     with torch.no_grad():
         for batch_idx, batch in enumerate(test_loader):
+            room_name = batch['room_name']
             room_shape = batch['room_shape'].to(device)
             obj_tokens = batch['obj_tokens'].to(device)
             attention_mask = batch['attention_mask'].to(device)
+            # print(attention_mask)
             root, recon, vq_loss, _ = model(obj_tokens, padding_mask=attention_mask)
             
             decoded_recon = decode_obj_tokens_with_mask(recon, attention_mask)
+            decoded_raw  = decode_obj_tokens_with_mask(obj_tokens, attention_mask)
 
             # 这里调用可视化函数，可以传入输入和输出
-            visualize_result(decoded_recon)
+            visualize_result(decoded_recon, raw_data=decoded_raw, room_name=room_name)
 
             print(f"Processed batch {batch_idx+1}/{len(test_loader)}")
 

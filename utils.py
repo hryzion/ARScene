@@ -47,7 +47,7 @@ def decode_obj_token(obj_token):
     rotation = obj_token[len(THREED_FRONT_CATEGORY) + 9:len(THREED_FRONT_CATEGORY) + 12]
     scale = obj_token[len(THREED_FRONT_CATEGORY) + 12:]
 
-    coarse_semantic = THREED_FRONT_FURNITURE[THREED_FRONT_CATEGORY[np.argmax(cs)]]
+    coarse_semantic = THREED_FRONT_CATEGORY[np.argmax(cs)]
 
     return {
         'coarseSemantic': coarse_semantic,
@@ -74,7 +74,7 @@ def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask):
     for b in range(B):
         decoded_b = []
         for n in range(N):
-            if attention_mask[b, n]:
+            if not attention_mask[b, n]:
                 decoded_b.append(decode_obj_token(batch_obj_tokens[b, n]))
             else:
                 # mask为False的token忽略或填None，视需要而定
@@ -83,7 +83,7 @@ def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask):
     return decoded
 
 
-def visualize_result(recon_data):
+def visualize_result(recon_data, raw_data = None, room_name = None):
     """
     recon_data: List[List[obj_dict]]
     每个obj_dict形如:
@@ -95,15 +95,24 @@ def visualize_result(recon_data):
         'scale': [...]
     }
     """
+    if raw_data is not None:
+        assert len(recon_data) == len(raw_data), "recon_data 和 raw_data 的长度必须相同"
+
     N = len(recon_data)  # batch size
 
-    fig, axes = plt.subplots(1, N, figsize=(5*N, 5))
+    if raw_data is not None:
+        fig, axes = plt.subplots(2, N, figsize=(5*N, 10))  # 两行分别显示原始和重建结果
+    else:
+        fig, axes = plt.subplots(1, N, figsize=(5*N, 10))
     if N == 1:
         axes = [axes]  # 统一成list方便遍历
 
     for idx, scene in enumerate(recon_data):
-        ax = axes[idx]
+        ax = axes[0, idx]
+        ax.set(xlim=(-4, 4), ylim=(-4, 4))
         ax.set_title(f"Scene {idx}")
+        if room_name is not None:
+            ax.set_title(f"{room_name[idx]}")
         ax.set_xlabel("X")
         ax.set_ylabel("Z")
         ax.set_aspect('equal', adjustable='box')
@@ -117,8 +126,8 @@ def visualize_result(recon_data):
             bbox_max = np.array(obj['bbox']['max'])
 
             # 投影到 XZ 平面（取 X 和 Z 坐标范围）
-            x_min, z_min = bbox_min[0], bbox_min[1]
-            x_max, z_max = bbox_max[0], bbox_max[1]
+            x_min, z_min = bbox_min[0], bbox_min[2]
+            x_max, z_max = bbox_max[0], bbox_max[2]
             width = x_max - x_min
             height = z_max - z_min
 
@@ -132,7 +141,67 @@ def visualize_result(recon_data):
             )
             ax.add_patch(rect)
 
+            ax.text(
+                x_min + width / 2,
+                z_min + height / 2,
+                cat,
+                color='black',        # 文字颜色，可以根据背景调整
+                ha='center',          # 水平居中
+                va='center',          # 垂直居中
+                fontsize=8,           # 字体大小
+                fontweight='bold',    # 加粗（可选）
+                alpha=0.8             # 透明度（可选）
+            )
+
         ax.grid(True)
+
+    if raw_data is not None:
+        for idx, scene in enumerate(raw_data):
+            ax = axes[1, idx]
+            ax.set(xlim=(-4, 4), ylim=(-4, 4))
+            ax.set_title(f"Raw Scene {idx}")
+            if room_name is not None:
+                ax.set_title(f"{room_name[idx]}")
+            ax.set_xlabel("X")
+            ax.set_ylabel("Z")
+            ax.set_aspect('equal', adjustable='box')
+
+            # 遍历该场景的每个物体
+            for obj in scene:
+                cat = obj['coarseSemantic']
+                color = get_category_color(cat)
+
+                bbox_min = np.array(obj['bbox']['min'])
+                bbox_max = np.array(obj['bbox']['max'])
+
+                # 投影到 XZ 平面（取 X 和 Z 坐标范围）
+                x_min, z_min = bbox_min[0], bbox_min[2]
+                x_max, z_max = bbox_max[0], bbox_max[2]
+                width = x_max - x_min
+                height = z_max - z_min
+
+                rect = patches.Rectangle(
+                    (x_min, z_min),
+                    width, height,
+                    linewidth=1,
+                    edgecolor=color,
+                    facecolor=color,
+                    alpha=0.5
+                )
+                ax.add_patch(rect)
+                ax.text(
+                    x_min + width / 2,
+                    z_min + height / 2,
+                    cat,
+                    color='black',        # 文字颜色，可以根据背景调整
+                    ha='center',          # 水平居中
+                    va='center',          # 垂直居中
+                    fontsize=8,           # 字体大小
+                    fontweight='bold',    # 加粗（可选）
+                    alpha=0.8             # 透明度（可选）
+                )
+
+            ax.grid(True)
 
     plt.tight_layout()
     plt.show()
