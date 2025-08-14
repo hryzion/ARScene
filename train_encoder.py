@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from losses.recon_loss import ObjTokenReconstructionLoss
 
 # ----------------------------
 # 超参数
@@ -22,10 +23,12 @@ def train_model(
     num_epochs=10,
     lr=1e-4,
     beta=0.25,
-    save_path='best_model.pth'
+    save_path='best_model.pth',
+    criterion = None
 ):
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.MSELoss()
+    if criterion is None:
+        criterion = nn.MSELoss()
 
     best_val_loss = float('inf')
 
@@ -43,7 +46,7 @@ def train_model(
 
             optimizer.zero_grad()
             root, recon, vq_loss, _ = model(obj_tokens, padding_mask=attention_mask)
-            recon_loss = criterion(recon, obj_tokens)
+            recon_loss, bond_losses = criterion(recon, obj_tokens, attention_mask)
 
             loss = recon_loss + beta * vq_loss
             loss.backward()
@@ -76,7 +79,7 @@ def train_model(
                 
 
                 root, recon, vq_loss, _ = model(obj_tokens, padding_mask=attention_mask)
-                recon_loss = criterion(recon, obj_tokens)
+                recon_loss, bond_losses = criterion(recon, obj_tokens, attention_mask)
 
                 loss = recon_loss + beta * vq_loss
 
@@ -90,14 +93,14 @@ def train_model(
 
         print(f"[Val] Epoch {epoch+1}: Loss={avg_val_loss:.4f}, Recon={avg_val_recon:.4f}, VQ={avg_val_vq:.4f}")
         print(f" VQ Usage Rate: {model.quantizer.last_usage_rate*100:.2f}%, Unique Codes: {len(model.quantizer.last_unique_codes) if model.quantizer.last_unique_codes is not None else 0}")
-
+        print()
         # Save best model
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), save_path)
             print(f"Best model saved at epoch {epoch+1} with val_loss={best_val_loss:.4f}")
 
-    print(" Training Complete.")
+    print("Training Complete.")
 
 
 if __name__ == '__main__':
@@ -119,4 +122,6 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
     model = RoomLayoutVQVAE(token_dim=64, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS).to(device)
-    train_model(model, train_loader, val_loader, device,num_epochs=NUM_EPOCHS)
+    criterion = ObjTokenReconstructionLoss()
+    
+    train_model(model, train_loader, val_loader, device,num_epochs=NUM_EPOCHS, criterion=criterion)

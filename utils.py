@@ -356,4 +356,4 @@ def get_category_color(category):
         return (0.5, 0.5, 0.5)  # 默认灰色
 
 if __name__ == "__main__":
-    print(len(THREED_FRONT_FURNITURE))
+    print(len(THREED_FRONT_CATEGORY))
