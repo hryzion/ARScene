@@ -47,7 +47,7 @@ def main():
             decoded_raw  = decode_obj_tokens_with_mask(obj_tokens, attention_mask)
 
             # 这里调用可视化函数，可以传入输入和输出
-            visualize_result(decoded_recon, raw_data=decoded_raw, room_name=room_name)
+            visualize_result(decoded_recon, raw_data=decoded_raw, room_name=room_name, save_dir='./visualizations')
 
             print(f"Processed batch {batch_idx+1}/{len(test_loader)}")
 

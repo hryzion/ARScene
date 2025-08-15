@@ -32,39 +32,51 @@ def parse_arguments():
         default='best_model.pth',
         help='Path to save the best model.'
     )
-    parser.add_argument(
-        '--encoder_depth',
-        type=int,
-        default=2,
-        help='Depth of the Transformer encoder.'
-    )
-    parser.add_argument(
-        '--decoder_depth',
-        type=int,
-        default=2,
-        help='Depth of the Transformer decoder.'
-    )
-    parser.add_argument(
-        '--heads',
-        type=int,
-        default=4,
-        help='Number of attention heads in the Transformer.'
-    )
-    parser.add_argument(
-        '--num_embeddings',
-        type=int,
-        default=24,
-        help='Number of embeddings for the Vector Quantizer.'
-    )
+    
     parser.add_argument(
         '--windows_door_in_condition',
         action='store_true',
         help = 'If set, the model will be trained with windows and doors in the condition.'
     )
+    parser.add_argument(
+        '--model',
+        type=str,
+        default = 'vqvae-s'
+    )
     args = parser.parse_args()
+
+
+    if args.model not in ['vqvae-s', 'vqvae-m', 'vqvae-l']:
+        raise ValueError("Model must be one of 'vqvae-s', 'vqvae-m', or 'vqvae-l'.")
+    
+    if args.model == 'vqvae-s':
+        args.encoder_depth = 2
+        args.decoder_depth = 2
+        args.heads = 4
+        args.num_embeddings = 32
+    elif args.model == 'vqvae-m':
+        args.encoder_depth = 4
+        args.decoder_depth = 4
+        args.heads = 8
+        args.num_embeddings = 64
+    elif args.model == 'vqvae-l':
+        args.encoder_depth = 6
+        args.decoder_depth = 6
+        args.heads = 16
+        args.num_embeddings = 512
+
+    if args.num_embeddings < 1:
+        raise ValueError("Number of embeddings must be at least 1.")
+
+
     return args
 
 
-DATA_DIR = '../3DFront/scenes'#rf"D:\zhx_workspace\3DScenePlatformDev\dataset\Levels2021"
-OBJ_DIR = '../3DFront/objects'
+DATA_DIR =  '/mnt/disk-1/zhx24/dataset/3dfront/Levels2021'
+#'../3DFront/scenes'#rf"D:\zhx_workspace\3DScenePlatformDev\dataset\Levels2021"
+
+
+
+OBJ_DIR = '/mnt/disk-1/zhx24/dataset/3dfront/object'
+#'../3DFront/objects'
 

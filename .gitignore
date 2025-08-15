@@ -1,3 +1,5 @@
 datasets/processed
 *.pth
 __pycache__
+
+visualizations

@@ -2,7 +2,7 @@ import json
 import tqdm
 import os
 from config import DATA_DIR
-from utils import load_scene_json, divide_scene_json_to_rooms, get_room_attributes
+from utils import load_scene_json, divide_scene_json_to_rooms, get_room_attributes, CRASHED_ROOM
 import random
 import numpy as np
 TARGET_DIR = './datasets/processed'
@@ -11,7 +11,8 @@ def preprocess_3d_front():
     for scene_json_file in tqdm.tqdm(os.listdir(DATA_DIR)):
         if not scene_json_file.endswith('.json'):
             continue
-        
+        if scene_json_file in CRASHED_ROOM:
+            continue
         scene_json_path = os.path.join(DATA_DIR, scene_json_file)
         scene_json = load_scene_json(scene_json_path)
 

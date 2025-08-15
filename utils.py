@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
+import os
 
 def get_room_attributes(room):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
@@ -83,7 +84,7 @@ def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask):
     return decoded
 
 
-def visualize_result(recon_data, raw_data = None, room_name = None):
+def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = None):
     """
     recon_data: List[List[obj_dict]]
     每个obj_dict形如:
@@ -204,6 +205,9 @@ def visualize_result(recon_data, raw_data = None, room_name = None):
             ax.grid(True)
 
     plt.tight_layout()
+    if save_dir is not None:
+        os.makedirs(save_dir, exist_ok=True)
+        plt.savefig(f"{save_dir}/{room_name}.png", bbox_inches='tight')
     plt.show()
 
 def load_scene_json(scene_json_path):
@@ -214,6 +218,8 @@ def load_scene_json(scene_json_path):
 def divide_scene_json_to_rooms(scene_json):
     rooms = []
     for room in scene_json['rooms']:
+        if 'roomShape' not in room or 'objList' not in room:
+            continue
         obj_list = room['objList']
         count = 0
         for obj in obj_list:
@@ -224,7 +230,7 @@ def divide_scene_json_to_rooms(scene_json):
             rooms.append(room)
     return rooms
 
-THREED_FRONT_FURNITURE = {'Barstool': 'stool', 'Bookcase / jewelry Armoire': 'bookshelf', 'Bunk Bed': 'bunk_bed', 'Ceiling Lamp': 'ceiling_lamp', 'Chaise Longue Sofa': 'chaise_longue_sofa', 'Children Cabinet': 'cabinet', 'Classic Chinese Chair': 'chinese_chair', 'Coffee Table': 'coffee_table', 'Corner/Side Table': 'corner_side_table', 'Desk': 'desk', 'Dining Chair': 'dining_chair', 'Dining Table': 'dining_table', 'Drawer Chest / Corner cabinet': 'cabinet', 'Dressing Chair': 'dressing_chair', 'Dressing Table': 'dressing_table', 'Footstool / Sofastool / Bed End Stool / Stool': 'stool', 'Kids Bed': 'kids_bed', 'King-size Bed': 'double_bed', 'L-shaped Sofa': 'l_shaped_sofa', 'Lazy Sofa': 'lazy_sofa', 'Lounge Chair / Cafe Chair / Office Chair': 'lounge_chair', 'Loveseat Sofa': 'loveseat_sofa', 'Nightstand': 'nightstand', 'Pendant Lamp': 'pendant_lamp', 'Round End Table': 'round_end_table', 'Shelf': 'shelf', 'Sideboard / Side Cabinet / Console table': 'console_table', 'Single bed': 'single_bed', 'TV Stand': 'multi_seat_sofa', 'Three-seat / Multi-seat Sofa': 'tv_stand', 'Wardrobe': 'wardrobe', 'Wine Cabinet': 'wine_cabinet', 'Armchair': 'armchair', 'armchair': 'armchair'}
+THREED_FRONT_FURNITURE = {'Barstool': 'stool', 'Bookcase / jewelry Armoire': 'bookshelf', 'Bunk Bed': 'bunk_bed', 'Ceiling Lamp': 'ceiling_lamp', 'Chaise Longue Sofa': 'chaise_longue_sofa', 'Children Cabinet': 'cabinet', 'Classic Chinese Chair': 'chinese_chair', 'Coffee Table': 'coffee_table', 'Corner/Side Table': 'corner_side_table', 'Desk': 'desk', 'Dining Chair': 'dining_chair', 'Dining Table': 'dining_table', 'Drawer Chest / Corner cabinet': 'cabinet', 'Dressing Chair': 'dressing_chair', 'Dressing Table': 'dressing_table', 'Footstool / Sofastool / Bed End Stool / Stool': 'stool', 'Kids Bed': 'kids_bed', 'King-size Bed': 'double_bed', 'L-shaped Sofa': 'l_shaped_sofa', 'Lazy Sofa': 'lazy_sofa', 'Lounge Chair / Cafe Chair / Office Chair': 'lounge_chair', 'Loveseat Sofa': 'loveseat_sofa', 'Nightstand': 'nightstand', 'Pendant Lamp': 'pendant_lamp', 'Round End Table': 'round_end_table', 'Shelf': 'shelf', 'Sideboard / Side Cabinet / Console table': 'console_table', 'Single bed': 'single_bed', 'TV Stand': 'multi_seat_sofa', 'Three-seat / Multi-seat Sofa': 'tv_stand', 'Wardrobe': 'wardrobe', 'Wine Cabinet': 'wine_cabinet', 'Armchair': 'armchair', 'armchair': 'armchair', 'Bed Frame' : 'single_bed'}
 THREED_FRONT_CATEGORY = ['dressing_table', 'console_table', 'round_end_table', 'chaise_longue_sofa', 'kids_bed', 'dressing_chair', 'tv_stand', 'bookshelf', 'lazy_sofa', 'dining_table', 'wardrobe', 'corner_side_table', 'armchair', 'chinese_chair', 'cabinet', 'nightstand', 'multi_seat_sofa', 'loveseat_sofa', 'stool', 'l_shaped_sofa', 'double_bed', 'bunk_bed', 'pendant_lamp', 'lounge_chair', 'dining_chair', 'single_bed', 'ceiling_lamp', 'wine_cabinet', 'coffee_table', 'shelf', 'desk']
 THREED_FRONT_COLOR  = [
     (0.121, 0.466, 0.705),
@@ -261,6 +267,11 @@ THREED_FRONT_COLOR  = [
     (0.654, 0.364, 0.270),
     (0.000, 0.620, 0.451),
 ]
+
+CRASHED_ROOM = {
+    'c4eb86a1-f886-4f85-9127-19a4e4d6e45a.json',
+    '917d2b6f-a607-4a67-bc6d-dc8952bc2c1a.json'
+}
 
 def centralize_room(room):
     bbox = find_bbox_from_room_shape(room['roomShape'])
