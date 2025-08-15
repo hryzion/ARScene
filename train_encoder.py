@@ -7,10 +7,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from losses.recon_loss import ObjTokenReconstructionLoss
-
-# ----------------------------
-# 超参数
-
 from config import parse_arguments
 
 
