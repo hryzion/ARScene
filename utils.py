@@ -3,7 +3,102 @@ import numpy as np
 from PIL import Image, ImageDraw
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
-import os
+import torch
+from torch.utils.data import DataLoader
+from collections import defaultdict
+
+
+
+def compute_stats(dataset, mask_key='mask'):
+    global THREED_FRONT_CATEGORY
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    
+    sums = defaultdict(lambda: 0.0)
+    sums_sq = defaultdict(lambda: 0.0)
+    counts = defaultdict(lambda: 0)
+
+    for batch in loader:
+        obj_tokens = batch['obj_tokens'][0]  # [O, D]
+        mask = batch.get(mask_key, torch.ones(obj_tokens.size(0)))  # [O]
+        valid = mask.bool()
+
+        # 按字段切片
+        cat_dim = len(THREED_FRONT_CATEGORY)
+        slices = {
+            'bbox_max': slice(cat_dim, cat_dim + 3),
+            'bbox_min': slice(cat_dim + 3, cat_dim + 6),
+            'translate': slice(cat_dim + 6, cat_dim + 9),
+            'rotation': slice(cat_dim + 9, cat_dim + 12),
+            'scale': slice(cat_dim + 12, None)
+        }
+
+        for key, s in slices.items():
+            vals = obj_tokens[valid, s]  # [num_valid_obj, D_field]
+            if vals.numel() == 0:
+                continue
+            sums[key] += vals.sum(0)
+            sums_sq[key] += (vals ** 2).sum(0)
+            counts[key] += vals.size(0)
+
+    stats = {}
+    for key in sums:
+        mean = sums[key] / counts[key]
+        var = (sums_sq[key] / counts[key]) - mean ** 2
+        std = torch.sqrt(var + 1e-6)
+        stats[key] = {'mean': mean, 'std': std}
+
+    return stats
+
+
+def save_stats(stats, path):
+    # 转成 float
+    serializable = {k: {'mean': v['mean'].tolist(), 'std': v['std'].tolist()} for k,v in stats.items()}
+    with open(path, 'w') as f:
+        json.dump(serializable, f)
+
+def load_stats(path):
+    with open(path, 'r') as f:
+        data = json.load(f)
+    stats = {k: {'mean': torch.tensor(v['mean']), 'std': torch.tensor(v['std'])} for k,v in data.items()}
+    return stats
+
+def normalize_tokens(obj_tokens, stats):
+    cat_dim = len(THREED_FRONT_CATEGORY)
+    slices = {
+        'bbox_max': slice(cat_dim, cat_dim + 3),
+        'bbox_min': slice(cat_dim + 3, cat_dim + 6),
+        'translate': slice(cat_dim + 6, cat_dim + 9),
+        'rotation': slice(cat_dim + 9, cat_dim + 12),
+        'scale': slice(cat_dim + 12, None)
+    }
+
+    normalized = obj_tokens.clone()
+    for key, s in slices.items():
+        if key == 'rotation':
+            continue  # rotation 不做标准化
+        mean, std = stats[key]['mean'], stats[key]['std']
+        normalized[:, s] = (obj_tokens[:, s] - mean) / std
+    return normalized
+
+def denormalize_tokens(obj_tokens, stats):
+    cat_dim = len(THREED_FRONT_CATEGORY)
+    slices = {
+        'bbox_max': slice(cat_dim, cat_dim + 3),
+        'bbox_min': slice(cat_dim + 3, cat_dim + 6),
+        'translate': slice(cat_dim + 6, cat_dim + 9),
+        'rotation': slice(cat_dim + 9, cat_dim + 12),
+        'scale': slice(cat_dim + 12, None)
+    }
+
+    denorm = obj_tokens.clone()
+    for key, s in slices.items():
+        if key == 'rotation':
+            continue
+        mean, std = stats[key]['mean'], stats[key]['std']
+        denorm[:, s] = obj_tokens[:, s] * std + mean
+    return denorm
+
+
 
 def get_room_attributes(room):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
