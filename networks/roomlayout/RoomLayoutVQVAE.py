@@ -50,7 +50,7 @@ class VectorQuantizer(nn.Module):
         return z_q, loss, indices.view(z.shape[0], z.shape[1])
 
 class SceneLayoutTokenEncoder(nn.Module):
-    def __init__(self, token_dim = 64, depth=4, heads=4 ,attr_dim = 46):
+    def __init__(self, token_dim = 64, depth=4, heads=4 ,attr_dim =52):
         super().__init__()
         # root
         self.token_dim = token_dim
@@ -77,7 +77,7 @@ class SceneLayoutTokenEncoder(nn.Module):
         return z
     
 class SceneLayoutTokenDecoder(nn.Module):
-    def __init__(self, token_dim=64, depth=4, heads=4,attr_dim = 46):
+    def __init__(self, token_dim=64, depth=4, heads=4,attr_dim = 52):
         super().__init__()
         self.decoder = TransformerBlock(token_dim, depth, heads)
         self.output_proj = nn.Linear(token_dim, attr_dim)

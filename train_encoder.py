@@ -8,7 +8,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from losses.recon_loss import ObjTokenReconstructionLoss
 from config import parse_arguments
-
+from datasets.SceneTokenNormalizer import SceneTokenNormalizer
+import os
 
 
 def train_model(
@@ -38,6 +39,7 @@ def train_model(
             # room_type = batch['room_type'].to(device)
             room_shape = batch['room_shape'].to(device)
             obj_tokens = batch['obj_tokens'].to(device)
+            # print(obj_tokens.shape)
             attention_mask = batch['attention_mask'].to(device)
 
             optimizer.zero_grad()
@@ -89,12 +91,13 @@ def train_model(
 
         print(f"[Val] Epoch {epoch+1}: Loss={avg_val_loss:.4f}, Recon={avg_val_recon:.4f}, VQ={avg_val_vq:.4f}")
         print(f" VQ Usage Rate: {model.quantizer.last_usage_rate*100:.2f}%, Unique Codes: {len(model.quantizer.last_unique_codes) if model.quantizer.last_unique_codes is not None else 0}")
-        print()
+       
         # Save best model
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), save_path)
             print(f"Best model saved at epoch {epoch+1} with val_loss={best_val_loss:.4f}")
+        print()
 
     print("Training Complete.")
 
@@ -113,6 +116,18 @@ if __name__ == '__main__':
 
     train_dataset = ThreeDFrontDataset(npz_dir='./datasets/processed',split='train')
     val_dataset = ThreeDFrontDataset(npz_dir='./datasets/processed',split='test')
+
+    # Normalizer
+    normalizer = SceneTokenNormalizer(category_dim=31, rotation_mode='sincos')
+    if os.path.exists('./datasets/processed/normalizer_stats.json'):
+        normalizer.load('./datasets/processed/normalizer_stats.json')
+    else:
+        normalizer.fit(train_dataset, mask_key='attention_mask', batch_size=BATCH_SIZE)
+        normalizer.save('./datasets/processed/normalizer_stats.json')
+
+    train_dataset.transform = normalizer.transform
+    val_dataset.transform = normalizer.transform
+    
    
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
@@ -120,4 +135,4 @@ if __name__ == '__main__':
     model = RoomLayoutVQVAE(token_dim=64, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS).to(device)
     criterion = ObjTokenReconstructionLoss()
     
-    train_model(model, train_loader, val_loader, device,num_epochs=NUM_EPOCHS, criterion=criterion)
+    train_model(model, train_loader, val_loader, device,num_epochs=NUM_EPOCHS, criterion=criterion, save_path=args.model+'.pth')

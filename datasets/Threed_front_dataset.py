@@ -52,7 +52,7 @@ class ThreeDFrontDataset(Dataset):
         }
 
         if self.transform:
-            sample = self.transform(sample)
+            sample['obj_tokens'] = self.transform(sample['obj_tokens'])
 
         return sample
     

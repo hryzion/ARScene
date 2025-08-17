@@ -50,8 +50,12 @@ class ObjTokenReconstructionLoss(nn.Module):
         rotation_target = target[:, :, start:start+3]
 
         start += 3
-        scale_pred = pred[:, :, start:]
-        scale_target = target[:, :, start:]
+        scale_pred = pred[:, :, start:start+3]
+        scale_target = target[:, :, start:start+3]
+
+        start += 3
+        rotation_pred = pred[:, :, start:start+6]
+        rotation_target = target[:, :, start:start+6]
 
         # === 计算各部分损失（带 mask）===
 
@@ -68,11 +72,12 @@ class ObjTokenReconstructionLoss(nn.Module):
 
         # --- 2. bbox、translate、scale 用 MSE ---
         # print(self.mse_loss(bbox_max_pred, bbox_max_target)[0,1])
-        loss_bbox_max = (self.mse_loss(bbox_max_pred, bbox_max_target) * mask.unsqueeze(-1)).sum() / (valid_tokens + 1e-8)
-        loss_bbox_min = (self.mse_loss(bbox_min_pred, bbox_min_target) * mask.unsqueeze(-1)).sum() / (valid_tokens + 1e-8)
-        loss_translate = (self.mse_loss(translate_pred, translate_target) * mask.unsqueeze(-1)).sum() / (valid_tokens + 1e-8)
-        loss_scale = (self.mse_loss(scale_pred, scale_target) * mask.unsqueeze(-1)).sum() / (valid_tokens + 1e-8)
-        loss_rotation = (self.mse_loss(rotation_pred, rotation_target) * mask.unsqueeze(-1)).sum() / (valid_tokens + 1e-8)
+        # print(bbox_max_pred[0,1], bbox_max_target[0,1])
+        loss_bbox_max = (self.mse_loss(bbox_max_pred, bbox_max_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
+        loss_bbox_min = (self.mse_loss(bbox_min_pred, bbox_min_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
+        loss_translate = (self.mse_loss(translate_pred, translate_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
+        loss_scale = (self.mse_loss(scale_pred, scale_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
+        loss_rotation = (self.mse_loss(rotation_pred, rotation_target).mean(dim = -1) *mask ).sum() / (valid_tokens + 1e-8)
     
       
 

@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import DataLoader
 import json
 import math
+from datasets.Threed_front_dataset import ThreeDFrontDataset
 
 class SceneTokenNormalizer:
     def __init__(self, category_dim, rotation_mode='sincos'):
@@ -16,7 +17,7 @@ class SceneTokenNormalizer:
 
     def fit(self, dataset, mask_key='attention_mask', batch_size=8):
         """统计训练集的 mean/std，排除 padding"""
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
         sums, sums_sq, counts = {}, {}, {}
 
         slices = {
@@ -31,6 +32,7 @@ class SceneTokenNormalizer:
             obj_tokens = batch['obj_tokens']  # [B, O, D]
             B, O, D = obj_tokens.shape
             mask = batch.get(mask_key, torch.ones(B, O)) # [B, O]
+            mask = ~mask  # padding 为 True，非 padding 为 False
             for key, s in slices.items():
                 if key == 'rotation':
                     continue  # rotation 不统计 mean/std
