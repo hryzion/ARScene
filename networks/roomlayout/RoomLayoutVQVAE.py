@@ -90,18 +90,24 @@ class SceneLayoutTokenDecoder(nn.Module):
 
 
 class RoomLayoutVQVAE(nn.Module):
-    def __init__(self, token_dim=64, num_embeddings=512, enc_depth=4, dec_depth=4, heads=4):
+    def __init__(self, token_dim=64, num_embeddings=512, enc_depth=4, dec_depth=4, heads=4, args = None):
         super().__init__()
 
         # VQVAE encoder and decoder
         self.encoder = SceneLayoutTokenEncoder(token_dim, depth=enc_depth, heads=heads)
         self.quantizer = VectorQuantizer(num_embeddings, token_dim)
         self.decoder = SceneLayoutTokenDecoder(token_dim, depth=dec_depth, heads=heads)
+        self.args = args
 
 
     def forward(self, x, padding_mask=None):  # x: [B, N, D], mask: [B, N]
         z = self.encoder(x, padding_mask=padding_mask) # B, N+1, D
-        z_q, vq_loss, indices = self.quantizer(z) # B, N+1, D   
+        if self.args.bottleneck == 'ae':
+            z_q = z
+            vq_loss = torch.tensor(0.0, device=z.device)
+            indices = None
+        elif self.args.bottleneck == 'vqvae':
+            z_q, vq_loss, indices = self.quantizer(z) # B, N+1, D   
         x = self.decoder(z_q, padding_mask=padding_mask) 
         root = x[:, :1, :]    # B, 1, D
         recon = x[:, 1:, :]   # B, N, D

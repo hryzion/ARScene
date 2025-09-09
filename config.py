@@ -34,6 +34,12 @@ def parse_arguments():
     )
     
     parser.add_argument(
+        '--bottleneck',
+        type=str,
+        default='ae',
+        choices=['ae', 'vae', 'vqvae'],
+    )
+    parser.add_argument(
         '--windows_door_in_condition',
         action='store_true',
         help = 'If set, the model will be trained with windows and doors in the condition.'

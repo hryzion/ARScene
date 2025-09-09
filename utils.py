@@ -303,7 +303,7 @@ def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = N
     plt.tight_layout()
     if save_dir is not None:
         os.makedirs(save_dir, exist_ok=True)
-        plt.savefig(f"{save_dir}/{room_name}.png", bbox_inches='tight')
+        plt.savefig(f"{save_dir}/{room_name[0]}.png", bbox_inches='tight')
     plt.show()
 
 def load_scene_json(scene_json_path):

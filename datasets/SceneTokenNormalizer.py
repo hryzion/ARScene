@@ -96,7 +96,7 @@ class SceneTokenNormalizer:
         original_shape = obj_tokens.shape
         if obj_tokens.dim() == 3:
             B, N, D = original_shape
-            obj_tokens = obj_tokens.view(-1, D)  # [B*N, D]
+            obj_tokens = obj_tokens.reshape(-1, D)  # [B*N, D]
 
         slices = {
             'bbox_max': slice(self.category_dim, self.category_dim + 3),
@@ -126,9 +126,9 @@ class SceneTokenNormalizer:
         
         if len(original_shape) == 3:
             new_D = ret_denorm.size(1)
-            ret_denorm = ret_denorm.view(B, N, new_D)
-        
-        return denorm
+            ret_denorm = ret_denorm.reshape(B, N, new_D)
+        # print(ret_denorm.shape, original_shape)
+        return ret_denorm
 
     def save(self, path):
         serializable = {k: {'mean': v['mean'].tolist(), 'std': v['std'].tolist()} for k, v in self.stats.items()}
