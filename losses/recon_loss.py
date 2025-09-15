@@ -12,7 +12,8 @@ class ObjTokenReconstructionLoss(nn.Module):
             'bbox_min': 1.0,
             'translate': 1.0,
             'rotation': 1.0,
-            'scale': 1.0
+            'scale': 1.0,
+            'latent':1.0
         }
         self.mse_loss = nn.MSELoss(reduction='none')  # 用 none 自己处理 mask
 
@@ -54,8 +55,14 @@ class ObjTokenReconstructionLoss(nn.Module):
         scale_target = target[:, :, start:start+3]
 
         start += 3
+        latent_pred = pred[:, :, start:start + 64]
+        latent_target = target[:, :, start:start + 64]
+
+        start += 64
         rotation_pred = pred[:, :, start:start+6]
         rotation_target = target[:, :, start:start+6]
+
+        
 
         # === 计算各部分损失（带 mask）===
 
@@ -78,7 +85,7 @@ class ObjTokenReconstructionLoss(nn.Module):
         loss_translate = (self.mse_loss(translate_pred, translate_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
         loss_scale = (self.mse_loss(scale_pred, scale_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
         loss_rotation = (self.mse_loss(rotation_pred, rotation_target).mean(dim = -1) *mask ).sum() / (valid_tokens + 1e-8)
-    
+        loss_latent = (self.mse_loss(latent_pred, latent_target).mean(dim = -1) *mask ).sum() / (valid_tokens + 1e-8)
       
 
         # === 加权求和 ===
@@ -88,7 +95,8 @@ class ObjTokenReconstructionLoss(nn.Module):
             self.weights['bbox_min'] * loss_bbox_min + \
             self.weights['translate'] * loss_translate + \
             self.weights['rotation'] * loss_rotation + \
-            self.weights['scale'] * loss_scale
+            self.weights['scale'] * loss_scale + \
+            self.weights['latent'] * loss_latent
        
         # 返回总损失and各部分损失
         # print(f"Total Loss: {total_loss.item():.4f}, loss_cs: {loss_cs.item():.4f}, loss_bbox_min: {loss_bbox_min.item():.4f}, loss_bbox_max: {loss_bbox_max.item():.4f}, loss_translate: {loss_translate.item():.4f}, loss_rotation: {loss_rotation.item():.4f}, loss_scale: {loss_scale.item():.4f}")
@@ -98,5 +106,6 @@ class ObjTokenReconstructionLoss(nn.Module):
             'bbox_min': loss_bbox_min.item(),
             'translate': loss_translate.item(),
             'rotation': loss_rotation.item(),
-            'scale': loss_scale.item()
+            'scale': loss_scale.item(),
+            'latent': loss_latent.item()
         }

@@ -5,13 +5,15 @@ import math
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 
 class SceneTokenNormalizer:
-    def __init__(self, category_dim, rotation_mode='sincos'):
+    def __init__(self, category_dim, obj_feat = 64, rotation_mode='sincos'):
         """
         category_dim: 分类 token 的维度（len(THREED_FRONT_CATEGORY)）
         rotation_mode: 'sincos' 或 'raw'
         """
         self.category_dim = category_dim
-        self.origin_dim = category_dim + 15
+        self.obj_dim = obj_feat
+        self.origin_dim = category_dim + 15 + obj_feat  # 原始维度
+        
         self.rotation_mode = rotation_mode
         self.stats = None  # {'bbox_max': {'mean':..., 'std':...}, ...}
 
@@ -25,7 +27,8 @@ class SceneTokenNormalizer:
             'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
             'translate': slice(self.category_dim + 6, self.category_dim + 9),
             'rotation': slice(self.category_dim + 9, self.category_dim + 12),
-            'scale': slice(self.category_dim + 12, self.origin_dim)
+            'scale': slice(self.category_dim + 12, self.category_dim+15),
+            'latent': slice(self.category_dim + 15, self.origin_dim)
         }
 
         for batch in loader:
@@ -68,7 +71,8 @@ class SceneTokenNormalizer:
             'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
             'translate': slice(self.category_dim + 6, self.category_dim + 9),
             'rotation': slice(self.category_dim + 9, self.category_dim + 12),
-            'scale': slice(self.category_dim + 12, self.origin_dim)
+            'scale': slice(self.category_dim + 12, self.category_dim + 15),
+            'latent': slice(self.category_dim + 15, self.origin_dim)
         }
 
         normalized = obj_tokens.clone()
@@ -103,7 +107,8 @@ class SceneTokenNormalizer:
             'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
             'translate': slice(self.category_dim + 6, self.category_dim + 9),
             'rotation': slice(self.category_dim + 9, self.category_dim + 12),
-            'scale': slice(self.category_dim + 12, self.origin_dim)
+            'scale': slice(self.category_dim + 12, self.category_dim + 15),
+            'latent': slice(self.category_dim + 15, self.origin_dim)
         }
 
         denorm = obj_tokens.clone()

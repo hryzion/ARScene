@@ -138,4 +138,4 @@ if __name__ == '__main__':
     model = RoomLayoutVQVAE(token_dim=64, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS,args=args).to(device)
     criterion = ObjTokenReconstructionLoss()
     
-    train_model(model, train_loader, val_loader, device,num_epochs=NUM_EPOCHS, criterion=criterion, save_path=args.model+'.pth',args=args)
+    train_model(model, train_loader, val_loader, device,num_epochs=NUM_EPOCHS, criterion=criterion, save_path=args.save_path,args=args)

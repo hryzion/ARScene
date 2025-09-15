@@ -5,7 +5,7 @@ def parse_arguments():
     parser.add_argument(
         '--num_epochs',
         type=int,
-        default=50,
+        default=100,
         help='Number of epochs to train the model.'
     )
     parser.add_argument(
@@ -86,3 +86,5 @@ DATA_DIR =  '/mnt/disk-1/zhx24/dataset/3dfront/Levels2021'
 OBJ_DIR = '/mnt/disk-1/zhx24/dataset/3dfront/object'
 #'../3DFront/objects'
 
+
+SOURCE_3D_FUTURE_DIR = '/mnt/disk-1/zhx24/code/ARScene/datasets/models'

@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 from collections import defaultdict
 import os
+from config import OBJ_DIR
 
 
 
@@ -70,7 +71,7 @@ def normalize_tokens(obj_tokens, stats):
         'bbox_min': slice(cat_dim + 3, cat_dim + 6),
         'translate': slice(cat_dim + 6, cat_dim + 9),
         'rotation': slice(cat_dim + 9, cat_dim + 12),
-        'scale': slice(cat_dim + 12, None)
+        'scale': slice(cat_dim + 12, cat_dim+15)
     }
 
     normalized = obj_tokens.clone()
@@ -88,7 +89,7 @@ def denormalize_tokens(obj_tokens, stats):
         'bbox_min': slice(cat_dim + 3, cat_dim + 6),
         'translate': slice(cat_dim + 6, cat_dim + 9),
         'rotation': slice(cat_dim + 9, cat_dim + 12),
-        'scale': slice(cat_dim + 12, None)
+        'scale': slice(cat_dim + 12, cat_dim + 15)
     }
 
     denorm = obj_tokens.clone()
@@ -120,6 +121,16 @@ def embed_obj_token(obj):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
     if 'coarseSemantic' not in obj or obj["coarseSemantic"] == 'Window' or obj['coarseSemantic'] == 'Door':
         return None
+    if 'inDatabase' not in obj or not obj['inDatabase']:
+        return None
+    if obj['modelId'] == '7465':
+        return None
+    
+    model_id = obj['modelId']
+    model_info = np.load(os.path.join(OBJ_DIR,f"{model_id}", f"{model_id}_norm_pc_latent.npz"))
+    latent = np.array(model_info['latent']) #[1, latent_dim]
+    latent = latent.flatten()  # [latent_dim]
+    
     cs = np.zeros(len(THREED_FRONT_CATEGORY), dtype=np.float32)
     # print(obj['coarseSemantic'])
     cid = THREED_FRONT_CATEGORY.index(THREED_FRONT_FURNITURE[obj['coarseSemantic']])
@@ -132,7 +143,7 @@ def embed_obj_token(obj):
     scale = np.array(obj['scale'])
 
     return np.concatenate((
-        cs, bbox_max, bbox_min, translate, rotation, scale
+        cs, bbox_max, bbox_min, translate, rotation, scale,latent
     ))
 
 def decode_obj_token(obj_token):
@@ -142,7 +153,8 @@ def decode_obj_token(obj_token):
     bbox_min = obj_token[len(THREED_FRONT_CATEGORY) + 3:len(THREED_FRONT_CATEGORY) + 6]
     translate = obj_token[len(THREED_FRONT_CATEGORY) + 6:len(THREED_FRONT_CATEGORY) + 9]
     rotation = obj_token[len(THREED_FRONT_CATEGORY) + 9:len(THREED_FRONT_CATEGORY) + 12]
-    scale = obj_token[len(THREED_FRONT_CATEGORY) + 12:]
+    scale = obj_token[len(THREED_FRONT_CATEGORY) + 12:len(THREED_FRONT_CATEGORY)+15]
+    latent = obj_token[len(THREED_FRONT_CATEGORY)+15:]
 
     coarse_semantic = THREED_FRONT_CATEGORY[np.argmax(cs)]
 
@@ -154,7 +166,8 @@ def decode_obj_token(obj_token):
         },
         'translate': translate.tolist(),
         'rotation': rotation.tolist(),
-        'scale': scale.tolist()
+        'scale': scale.tolist(),
+        'latent' : latent.tolist()
     }
 
 def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask):

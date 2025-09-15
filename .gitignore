@@ -1,5 +1,7 @@
 datasets/processed
 *.pth
 __pycache__
-
+datasets/models
 visualizations
+*.npy
+datasets/processed_old

@@ -1,11 +1,12 @@
 import json
 import tqdm
 import os
-from config import DATA_DIR
+from config import DATA_DIR,OBJ_DIR
 from utils import load_scene_json, divide_scene_json_to_rooms, get_room_attributes, CRASHED_ROOM
 import random
 import numpy as np
 TARGET_DIR = './datasets/processed'
+
 
 def preprocess_3d_front():
     for scene_json_file in tqdm.tqdm(os.listdir(DATA_DIR)):
@@ -33,6 +34,7 @@ def preprocess_3d_front():
             # save room info and obj info into folder
             room_dir = os.path.join(TARGET_DIR, split, f"{scene_origin}_room{idx}_{room_info['room_type']}")
             os.makedirs(room_dir, exist_ok=True)
+            
 
             # save in np format savez_compressed
             np.savez_compressed(
@@ -42,6 +44,7 @@ def preprocess_3d_front():
             )
 
             room_info['room_shape'].save(os.path.join(room_dir, 'room_mask.png'))
+
 
     
 if __name__ == "__main__":
