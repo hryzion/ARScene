@@ -5,7 +5,7 @@ from datasets.SceneTokenNormalizer import SceneTokenNormalizer
 from networks.roomlayout.RoomLayoutVQVAE import RoomLayoutVQVAE  # 替换成你的模型类
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 from config import parse_arguments
-from utils import decode_obj_tokens_with_mask, visualize_result
+from utils import decode_obj_tokens_with_mask, visualize_result, pack_scene_json
 import os
 
 
@@ -26,7 +26,7 @@ def main():
     # 1. 初始化模型并加载权重
     model = RoomLayoutVQVAE(token_dim=64, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, args=args).to(device)
 
-    model.load_state_dict(torch.load('vqvae-l.pth', map_location=device))
+    model.load_state_dict(torch.load('/mnt/disk-1/zhx24/code/ARScene/room_autoencoder.pth', map_location=device))
     model.to(device)
     model.eval()
 
@@ -56,9 +56,16 @@ def main():
             denormalized_obj_tokens = normalizer.inverse_transform(obj_tokens)
             decoded_recon = decode_obj_tokens_with_mask(denormalized_recon, attention_mask)
             decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask)
-
+            test_scene_jsons = pack_scene_json(decoded_recon,room_name)
+            for i, scene_json in enumerate(test_scene_jsons):
+                save_path = os.path.join(f'{args.test_save_dir}/scene', f'{room_name[i]}_recon.json')
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                with open(save_path, 'w') as f:
+                    import json
+                    json.dump(scene_json, f, indent=4)
+                # print(f'Saved reconstructed scene JSON to {save_path}')
             # 这里调用可视化函数，可以传入输入和输出
-            visualize_result(decoded_recon, raw_data=decoded_raw, room_name=room_name, save_dir='./visualizations/exp3')
+            visualize_result(decoded_recon, raw_data=decoded_raw, room_name=room_name, save_dir=f'{args.test_save_dir}/topdown')
 
             print(f"Processed batch {batch_idx+1}/{len(test_loader)}")
 

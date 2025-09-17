@@ -9,7 +9,7 @@ from collections import defaultdict
 import os
 from config import OBJ_DIR
 
-
+MODEL_LATENTS = json.load(open('./datasets/model_meta_wi_lat.json'))
 
 def compute_stats(dataset, mask_key='mask'):
     global THREED_FRONT_CATEGORY
@@ -157,6 +157,7 @@ def decode_obj_token(obj_token):
     latent = obj_token[len(THREED_FRONT_CATEGORY)+15:]
 
     coarse_semantic = THREED_FRONT_CATEGORY[np.argmax(cs)]
+    model_id = get_modelid_by_latent(latent, coarse_semantic)
 
     return {
         'coarseSemantic': coarse_semantic,
@@ -167,8 +168,25 @@ def decode_obj_token(obj_token):
         'translate': translate.tolist(),
         'rotation': rotation.tolist(),
         'scale': scale.tolist(),
-        'latent' : latent.tolist()
+        'latent' : latent.tolist(),
+        'modelId': model_id,
+        'inDatabase': model_id is not None
     }
+
+
+def get_modelid_by_latent(latent, category):
+    global MODEL_LATENTS
+    if category not in MODEL_LATENTS:
+        return None
+    min_dist = float('inf')
+    best_model_id = None
+    for model_id, model_latent in MODEL_LATENTS[category].items():
+        model_latent = np.array(model_latent)
+        dist = np.linalg.norm(latent - model_latent)
+        if dist < min_dist:
+            min_dist = dist
+            best_model_id = model_id
+    return best_model_id
 
 def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask):
     """
@@ -192,6 +210,16 @@ def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask):
         decoded.append(decoded_b) ## [[obj1, obj2, ...], [obj1, obj2, ...], ...]
     return decoded
 
+def pack_scene_json(decoded_data,room_name):
+    packed_scene_jsons = []
+    for i, obj_list in enumerate(decoded_data): 
+        scene_json = {}
+        scene_json['origin'] = room_name[i]
+        scene_json['rooms'] = [{}]
+        scene_json['rooms'][0]['objList'] = obj_list
+        packed_scene_jsons.append(scene_json)
+    return packed_scene_jsons
+    
 
 def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = None):
     """
@@ -317,7 +345,7 @@ def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = N
     if save_dir is not None:
         os.makedirs(save_dir, exist_ok=True)
         plt.savefig(f"{save_dir}/{room_name[0]}.png", bbox_inches='tight')
-    plt.show()
+    plt.close(fig)
 
 def load_scene_json(scene_json_path):
     with open(scene_json_path, 'r') as file:

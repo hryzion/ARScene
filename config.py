@@ -49,9 +49,15 @@ def parse_arguments():
         type=str,
         default = 'vqvae-s'
     )
+
+    parser.add_argument(
+        '--test_save_dir',
+        type=str,
+        default='exp'
+    )
     args = parser.parse_args()
 
-
+    args.test_save_dir = f'./visualizations/{args.test_save_dir}'
     if args.model not in ['vqvae-s', 'vqvae-m', 'vqvae-l']:
         raise ValueError("Model must be one of 'vqvae-s', 'vqvae-m', or 'vqvae-l'.")
     
