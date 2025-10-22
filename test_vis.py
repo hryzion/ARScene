@@ -26,7 +26,7 @@ def main():
     # 1. 初始化模型并加载权重
     model = RoomLayoutVQVAE(token_dim=64, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, args=args).to(device)
 
-    model.load_state_dict(torch.load('/mnt/disk-1/zhx24/code/ARScene/room_autoencoder.pth', map_location=device))
+    model.load_state_dict(torch.load('/mnt/disk-1/zhx24/code/ARScene/room_autoencoder_138_300.pth', map_location=device))
     model.to(device)
     model.eval()
 

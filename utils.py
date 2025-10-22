@@ -166,7 +166,7 @@ def decode_obj_token(obj_token):
             'min': bbox_min.tolist()
         },
         'translate': translate.tolist(),
-        'rotation': rotation.tolist(),
+        'rotate': rotation.tolist(),
         'scale': scale.tolist(),
         'latent' : latent.tolist(),
         'modelId': model_id,
@@ -215,11 +215,63 @@ def pack_scene_json(decoded_data,room_name):
     for i, obj_list in enumerate(decoded_data): 
         scene_json = {}
         scene_json['origin'] = room_name[i]
+        scene_json['up'] = [0,1,0]
+        scene_json['front'] = [0,0,1]
         scene_json['rooms'] = [{}]
         scene_json['rooms'][0]['objList'] = obj_list
+        scene_json['rooms'][0]['roomId'] = 0
+        
         packed_scene_jsons.append(scene_json)
     return packed_scene_jsons
     
+
+# def load_room_as_scene(self,room):
+#         all_meshes = []
+
+#         count = 0
+#         scene_vert_color = None
+#         scene_vert_semantic = None
+#         for obj in room['objList']:
+#             if obj['coarseSemantic'] == 'Bed Frame':
+#                 continue
+#             if obj['inDatabase']:
+
+#                 obj_filename = os.path.join(OBJ_DIR, obj['modelId'],f'{obj["modelId"]}.obj')
+#                 mesh = load_objs_as_meshes([obj_filename],device=self.device)
+#                 translate = torch.Tensor(obj['translate'])
+#                 scale = torch.Tensor(obj['scale'])
+#                 rotate = torch.Tensor(obj['rotate'])
+
+#                 S = torch.diag(torch.tensor([scale[0],scale[1],scale[2],1.0])).to(self.device)
+
+#                 euler_angle = torch.tensor(rotate)
+#                 R = euler_angles_to_matrix(euler_angle,convention=obj['rotateOrder'])
+#                 R = torch.cat((R, torch.zeros(3, 1)), dim=1)
+#                 R = torch.cat((R, torch.tensor([[0, 0, 0, 1.0]])), dim=0)
+#                 R = R.to(self.device)
+
+#                 T = torch.eye(4)
+#                 T[:3, 3] = torch.tensor(translate)
+#                 T = T.to(device=self.device)
+#                 transform = T @ R @ S
+
+#                 temp = mesh.transform_verts(transform)
+#                 all_meshes.append(temp)
+#                 obj_semantic = torch.zeros((len(mesh.verts_list()[0]), len(coarse_categories)))
+#                 obj_semantic[..., coarse_categories.index(fine_to_coarse[obj['coarseSemantic']])] = 1
+#                 obj_color = torch.tensor([coarse_to_color[fine_to_coarse[obj['coarseSemantic']]].copy()] * len(mesh.verts_list()[0]))
+#                 if count == 0:
+#                     scene_vert_color = obj_color
+#                     scene_vert_semantic = obj_semantic
+#                 else:
+#                     scene_vert_color = torch.cat([scene_vert_color, obj_color], dim=0)
+#                     scene_vert_semantic = torch.cat([scene_vert_semantic, obj_semantic],dim=0)
+#                 count +=1 
+        
+#         scene = join_meshes_as_scene(all_meshes)
+#         return scene, scene_vert_color, scene_vert_semantic
+
+
 
 def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = None):
     """

@@ -10,6 +10,7 @@ from losses.recon_loss import ObjTokenReconstructionLoss
 from config import parse_arguments
 from datasets.SceneTokenNormalizer import SceneTokenNormalizer
 import os
+import wandb
 
 
 def train_model(
@@ -91,6 +92,11 @@ def train_model(
         avg_val_vq = val_vq_loss / len(val_loader)
         avg_val_recon = val_recon_loss / len(val_loader)
 
+        wandb.log({
+            'Train Loss': avg_train_recon,
+            'Val Loss': avg_val_recon,
+            'epoch': epoch+1
+        })
         print(f"[Val] Epoch {epoch+1}: Loss={avg_val_loss:.4f}, Recon={avg_val_recon:.4f}, VQ={avg_val_vq:.4f}")
         if args.bottleneck == 'vqvae':
             print(f" VQ Usage Rate: {model.quantizer.last_usage_rate*100:.2f}%, Unique Codes: {len(model.quantizer.last_unique_codes) if model.quantizer.last_unique_codes is not None else 0}")
@@ -101,7 +107,7 @@ def train_model(
             torch.save(model.state_dict(), save_path)
             print(f"Best model saved at epoch {epoch+1} with val_loss={best_val_loss:.4f}")
         print()
-
+    wandb.finish()
     print("Training Complete.")
 
 
@@ -114,6 +120,8 @@ if __name__ == '__main__':
     DECODER_DEPTH = args.decoder_depth
     HEADS = args.heads
     NUM_EMBEDDINGS = args.num_embeddings
+
+    wandb.init(project="RoomLayoutVQVAE_Training")
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
