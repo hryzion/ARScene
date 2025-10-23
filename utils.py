@@ -6,6 +6,12 @@ import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 from collections import defaultdict
+import seaborn as sns
+from sklearn.cluster import DBSCAN
+from scipy.spatial.distance import pdist, squareform
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
+from sklearn.metrics import silhouette_score
 import os
 from config import OBJ_DIR
 
@@ -554,6 +560,278 @@ def get_category_color(category):
         return THREED_FRONT_COLOR[index]
     else:
         return (0.5, 0.5, 0.5)  # 默认灰色
+
+class BboxFINCH:
+    def __init__(self, distance_metric='min_distance'):
+        """
+        Initialize FINCH clustering for 3D bounding boxes
+        
+        Parameters:
+        - distance_metric: Either a string ('min_distance', 'iou') or a custom function
+                          that computes distance between two bboxes
+        """
+        self.distance_metric = distance_metric
+        self.partitions_ = []
+        
+    def _compute_distance(self, bbox1, bbox2):
+        """Compute distance between two bboxes based on the specified metric"""
+        if callable(self.distance_metric):
+            return self.distance_metric(bbox1, bbox2)
+        
+        if self.distance_metric == 'min_distance':
+            return self._min_distance(bbox1, bbox2)
+        elif self.distance_metric == 'iou':
+            return 1 - self._iou(bbox1, bbox2)  # Convert similarity to distance
+        else:
+            raise ValueError(f"Unknown distance metric: {self.distance_metric}")
+    
+    @staticmethod
+    def _min_distance(bbox1, bbox2):
+        """Calculate minimum Euclidean distance between two 3D boxes"""
+        min1, max1 = np.array(bbox1['min']), np.array(bbox1['max'])
+        min2, max2 = np.array(bbox2['min']), np.array(bbox2['max'])
+
+        # Calculate separation in each dimension
+        dist = np.maximum(0, np.maximum(min1 - max2, min2 - max1))
+        return np.linalg.norm(dist)
+    
+    @staticmethod
+    def _iou(bbox1, bbox2):
+        """Calculate Intersection over Union (IoU) for 3D boxes"""
+        min1, max1 = np.array(bbox1['min']), np.array(bbox1['max'])
+        min2, max2 = np.array(bbox2['min']), np.array(bbox2['max'])
+        
+        # Calculate intersection volume
+        intersection_min = np.maximum(min1, min2)
+        intersection_max = np.minimum(max1, max2)
+        intersection_dims = np.maximum(0, intersection_max - intersection_min)
+        intersection_volume = np.prod(intersection_dims)
+        
+        # Calculate union volume
+        vol1 = np.prod(max1 - min1)
+        vol2 = np.prod(max2 - min2)
+        union_volume = vol1 + vol2 - intersection_volume
+        
+        return intersection_volume / union_volume if union_volume > 0 else 0
+    
+    def _compute_adjacency_matrix(self, neighbor_indices_list):
+        """
+        改进的邻接矩阵计算，处理多个first neighbors的情况
+        neighbor_indices_list: 每个元素是该物体的所有first neighbors的数组
+        """
+        n_samples = len(neighbor_indices_list)
+        rows = []
+        cols = []
+        
+        for i in range(n_samples):
+            # 条件1: 连接该物体到它的所有first neighbors
+            valid_nbrs = [j for j in neighbor_indices_list[i] if 0 <= j < n_samples]
+            for j in valid_nbrs:
+                rows.extend([i, j])  # 双向连接
+                cols.extend([j, i])
+            
+            # 条件3: 连接共享任意first neighbor的物体
+            if len(neighbor_indices_list[i]) > 0:
+                # 获取该物体的所有first neighbors
+                my_first_nbrs = set(neighbor_indices_list[i])
+                
+                # 查找其他以这些neighbors作为first neighbor的物体
+                for other in range(n_samples):
+                    if other == i:
+                        continue
+                    
+                    other_first_nbrs = set(neighbor_indices_list[other])
+                    if my_first_nbrs & other_first_nbrs:  # 有共享的first neighbor
+                        rows.extend([i, other])
+                        cols.extend([other, i])
+        
+        # 创建稀疏邻接矩阵
+        # if max(rows + cols) >= n_samples:
+        #     raise ValueError("Invalid index in adjacency matrix")
+        data = np.ones(len(rows))
+        adjacency = csr_matrix((data, (rows, cols)), shape=(n_samples, n_samples))
+        
+        return adjacency    
+    
+    def _get_first_neighbors(self, distances):
+        """
+        获取每个物体的first neighbors，处理距离为0的平局情况
+        返回一个二维数组，每行包含该物体的所有first neighbors的索引
+        """
+        n_samples = distances.shape[0]
+        neighbor_indices = []
+        
+        for i in range(n_samples):
+            # 找到所有距离为最小值的邻居（可能不止一个）
+            other_dists = np.delete(distances[i], i)
+            if len(other_dists) == 0:
+                # 如果只有一个物体（没有其他物体）
+                neighbor_indices.append(np.array([], dtype=int))
+                continue
+
+            min_dist = np.min(other_dists)
+            first_nbrs = np.where(distances[i] == min_dist)[0]
+            first_nbrs = first_nbrs[first_nbrs != i]  # 排除自身
+            
+            if len(first_nbrs) == 0:
+                # 如果没有其他物体（只有自身），保持空列表
+                first_nbrs = np.array([], dtype=int)
+            
+            neighbor_indices.append(first_nbrs)
+        
+        return neighbor_indices
+
+    def fit(self, bboxes):
+        """
+        Fit FINCH clustering to bounding boxes
+        
+        Parameters:
+        - bboxes: List of bounding boxes in format:
+                  [{"min": [x1,y1,z1], "max": [x2,y2,z2]}, ...]
+        
+        Returns:
+        - self: Returns an instance of self
+        """
+        self.bboxes_ = bboxes
+        n_samples = len(bboxes)
+        if n_samples == 0:
+            return self
+        current_data = bboxes.copy()
+        current_labels = np.arange(n_samples, dtype=np.int32)  # Initial labels
+        original_labels = np.arange(n_samples, dtype=np.int32)
+        
+        while True:
+            # Step 1: Compute pairwise distances and find first neighbors
+            distances = np.zeros((len(current_data), len(current_data)))
+            for i in range(len(current_data)):
+                for j in range(i+1, len(current_data)):
+                    dist = self._compute_distance(current_data[i], current_data[j])
+                    distances[i, j] = dist
+                    distances[j, i] = dist
+            
+            # Find first neighbor for each point (excluding self)
+            neighbor_indices_list = self._get_first_neighbors(distances)
+            
+            # Step 2: Compute adjacency matrix
+            adjacency = self._compute_adjacency_matrix(neighbor_indices_list)
+            print(adjacency.todense())
+            # Step 3: Find connected components (clusters)
+            n_components, labels = connected_components(adjacency, directed=False)
+            print(n_components,'  ', labels)
+            # Map labels to original bboxes
+            new_labels = np.empty(n_samples, dtype=np.int32)
+            for new_label in range(n_components):
+                indices = (labels == new_label).nonzero()
+                new_labels[np.isin(original_labels, indices)] = new_label
+            
+            original_labels = new_labels
+
+            # Store partition
+            self.partitions_.append(original_labels.copy())
+            
+            #Finch算法是可进行递归进行层次聚类的，针对bounding box仍有bug，此处强制终止递归
+            # Check stopping condition (only one cluster left)
+            # if True:
+            #     break
+            if n_components == 1:
+                break
+                
+            # Prepare for next iteration: Compute cluster representatives
+            new_data = []
+            for cluster_id in range(n_components):
+                cluster_mask = (original_labels == cluster_id)
+                cluster_bboxes = [bboxes[i] for i in np.where(cluster_mask)[0]]
+                
+                # Compute mean bbox as cluster representative
+                min_coords = np.mean([b['min'] for b in cluster_bboxes], axis=0)
+                max_coords = np.mean([b['max'] for b in cluster_bboxes], axis=0)
+                new_data.append({"min": min_coords.tolist(), "max": max_coords.tolist()})
+            
+            current_data = new_data
+            current_labels = np.arange(n_components)
+            
+        return self
+    
+    def get_partitions(self):
+        """Get all hierarchical partitions"""
+        return self.partitions_
+    
+    def get_optimal_partition(self, n_clusters=None):
+        #没进行层次聚类这个函数不用管
+        """
+        Get optimal partition either automatically or by specifying number of clusters
+        
+        Parameters:
+        - n_clusters: Desired number of clusters (if None, selects partition with highest silhouette score)
+        
+        Returns:
+        - Array of cluster labels
+        """
+        if n_clusters is not None:
+            # Find the partition with closest number of clusters to requested
+            closest_part = None
+            min_diff = float('inf')
+            
+            for part in self.partitions_:
+                n_part_clusters = len(np.unique(part))
+                diff = abs(n_part_clusters - n_clusters)
+                if diff < min_diff:
+                    min_diff = diff
+                    closest_part = part
+            
+            return closest_part
+        else:
+            # Automatically select partition using silhouette score
+            
+            # Need to compute distance matrix for all bboxes for silhouette score
+            distance_matrix = np.zeros((len(self.bboxes_), len(self.bboxes_)))
+            for i in range(len(self.bboxes_)):
+                for j in range(i+1, len(self.bboxes_)):
+                    dist = self._compute_distance(self.bboxes_[i], self.bboxes_[j])
+                    distance_matrix[i, j] = dist
+                    distance_matrix[j, i] = dist
+            
+            best_score = -1
+            best_part = None
+            
+            for part in self.partitions_:
+                n_clusters = len(np.unique(part))
+                if n_clusters == 1 or n_clusters == len(self.bboxes_):
+                    continue  # Skip trivial cases
+                
+                score = silhouette_score(distance_matrix, part, metric='precomputed')
+                if score > best_score:
+                    best_score = score
+                    best_part = part
+            
+            if best_part is not None: return best_part
+            if len(self.partitions_) > 0 : return self.partitions_[0] # trivial case: only one cluster
+            return None
+
+def Finch_cluster(json_file,room_id, distance_metric='min_distance'):
+    """json_file: 场景布局json文件路径
+    room_id: 房间id, start from 0
+    返回值：{"label":label,"label_optimal":label_optimal}label为层次划分聚类结果最“细”的标签，label_optimal为层次划分聚类结果轮廓系数最优的标签
+    label中家具与标签按顺序对应，拥有相同标签的家具为同一类"""
+    with open(json_file, 'r', encoding='utf-8') as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError:
+            print(f"Error reading {json_file.name}, skipping.")
+
+    try:
+        room=data['rooms'][room_id]
+    except IndexError:
+        print(f"Error: room {room_id} not found in {json_file.name}, skipping.")
+
+    obj_bboxes = [obj['bbox'] for obj in room['objList']]
+    finch = BboxFINCH(distance_metric='min_distance')
+    finch.fit(obj_bboxes)
+    partitions = finch.get_partitions()
+    label = partitions[0]
+    print("Partitions:", partitions)
+    label_optimal = finch.get_optimal_partition()
+    return {"label":label,"label_optimal":label_optimal}
 
 if __name__ == "__main__":
     print(len(THREED_FRONT_CATEGORY))
