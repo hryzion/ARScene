@@ -1,6 +1,7 @@
 import torch
 from networks.roomlayout.RoomLayoutVQVAE import RoomLayoutVQVAE
 from datasets.Threed_front_dataset import ThreeDFrontDataset
+from datasets.SceneTokenNormalizer import SceneTokenNormalizer
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -8,7 +9,6 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from losses.recon_loss import ObjTokenReconstructionLoss
 from config import parse_arguments
-from datasets.SceneTokenNormalizer import SceneTokenNormalizer
 import os
 import wandb
 

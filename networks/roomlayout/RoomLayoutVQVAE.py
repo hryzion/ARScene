@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from quant import TokenSequentializer
 
 
 class TransformerBlock(nn.Module):
@@ -96,6 +97,8 @@ class RoomLayoutVQVAE(nn.Module):
         # VQVAE encoder and decoder
         self.encoder = SceneLayoutTokenEncoder(token_dim, depth=enc_depth, heads=heads)
         self.quantizer = VectorQuantizer(num_embeddings, token_dim)
+
+        self.token_sequentializer = TokenSequentializer(embed_dim=token_dim, resi_ratio=0.5, share_phi=1, use_prior_cluster=False)
         self.decoder = SceneLayoutTokenDecoder(token_dim, depth=dec_depth, heads=heads)
         self.args = args
 
@@ -108,6 +111,13 @@ class RoomLayoutVQVAE(nn.Module):
             indices = None
         elif self.args.bottleneck == 'vqvae':
             z_q, vq_loss, indices = self.quantizer(z) # B, N+1, D   
+        elif self.args.bottleneck == 'residual-vae':
+            z_q = self.token_sequentializer(z, padding_mask=padding_mask)
+            vq_loss = torch.tensor(0.0, device=z.device)
+            indices = None
+        else:
+            raise NotImplementedError(f"Unknown bottleneck type: {self.args.bottleneck}")
+
         x = self.decoder(z_q, padding_mask=padding_mask) 
         root = x[:, :1, :]    # B, 1, D
         recon = x[:, 1:, :]   # B, N, D

@@ -14,7 +14,7 @@ class TokenSequentializer(nn.Module):
         resi_ratio = 0.5,
         share_phi = 1,  # 0: non-shared, 1: shared, 2: partially-shared 
         use_prior_cluster = False,     
-        t_scales = [1, 2, 4, 7, 11]      
+        t_scales = [1, 2, 4, 7, 11]   # + N (last scale is the full resolution)
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -26,14 +26,14 @@ class TokenSequentializer(nn.Module):
 
         if share_phi == 1:
             self.seq_resi = PhiShared(
-                Phi(embed_dim=embed_dim, resi_ratio=resi_ratio)
+                PhiAttention(embed_dim=embed_dim, resi_ratio=resi_ratio)
             )
         elif share_phi == 0:
             self.seq_resi = PhiNonShared(
-                [Phi(embed_dim=embed_dim, resi_ratio=resi_ratio) for _ in range(10)]
+                [PhiAttention(embed_dim=embed_dim, resi_ratio=resi_ratio) for _ in range(10)]
             )
         else:
-            self.quant_resi = PhiPartiallyShared(nn.ModuleList([(Phi(embed_dim, resi_ratio) if abs(resi_ratio) > 1e-6 else nn.Identity()) for _ in range(share_phi)]))
+            self.quant_resi = PhiPartiallyShared(nn.ModuleList([(PhiAttention(embed_dim, resi_ratio) if abs(resi_ratio) > 1e-6 else nn.Identity()) for _ in range(share_phi)]))
 
         if self.use_prior_cluster:
             # TODO: prior cluster info inject there, explicitly
@@ -44,7 +44,7 @@ class TokenSequentializer(nn.Module):
             self.t_scales = t_scales
 
     # ---------------------- training encoder-decoder only --------------------------#
-    def forward(self, feature_map : torch.Tensor):
+    def forward(self, feature_map : torch.Tensor, padding_mask = None) -> torch.Tensor:
         '''
             Convert feature map to token sequence
             iteratively apply:
@@ -53,8 +53,11 @@ class TokenSequentializer(nn.Module):
                 fm                              -> residual fm [bnd] (fm - Phi(fm_outer))
 
         [input]
-            feature_map: B x N x D
+            feature_map: B x N x D with padding
         '''
+        mask_cat = F.pad(padding_mask, (1, 0), value=False)  # [B, N+1]
+    
+
         B, N, D = feature_map.shape
         f_rest = feature_map
         f_hat = torch.zeros_like(f_rest)
@@ -69,22 +72,23 @@ class TokenSequentializer(nn.Module):
             ## before last stage
             for stage_i in range(SN):
                 token_len = self.t_scales[stage_i]
-                f_down = self.down_resampler(f_rest, M=token_len)  # B x token_len x D
+                f_down = self.down_resampler(f_rest, M=token_len, padding_mask = mask_cat)  # B x token_len x D
                 f_up = self.up_resampler(f_down, M=N)  # B x N x D
                 # f_down = F.interpolate(f_rest.transpose(1,2), size=token_len, mode = 'linear', align_corners=True).transpose(1,2)  # B x token_len x D
                 # f_up = F.interpolate(f_down.transpose(1,2), size=N, mode = 'linear', align_corners=True).transpose(1,2)  # B x N x D
 
                 phi = self.quant_resi[stage_i/(SN-1)]
                 
-                f_resi = phi(f_up)
-                f_rest = f_rest - f_resi  # B x N x D
-                f_hat = f_hat + f_resi
+                f_resi = phi(f_up).masked_fill(mask_cat.unsqueeze(-1), 0.0)
+                f_rest = (f_rest - f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)  # B x N x D
+                f_hat = (f_hat + f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)
 
             ## last stage
-            f_resi = phi(f_rest)
-            f_rest = f_rest - f_resi  # B x N x D
-            f_hat = f_hat + f_resi
+            f_resi = phi(f_rest).masked_fill(mask_cat.unsqueeze(-1), 0.0)
+            f_rest = (f_rest - f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)  # B x N x D
+            f_hat = (f_hat + f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)
 
+            
         
             return f_hat
             
@@ -92,7 +96,7 @@ class TokenSequentializer(nn.Module):
 
 
     # ---------------------- training sar only --------------------------#
-    def generate_residual_fm_gt(self, feature_map: torch.Tensor) -> List[torch.Tensor]:
+    def generate_residual_fm_gt(self, feature_map: torch.Tensor, padding_mask = None) -> List[torch.Tensor]:
         B, N, D = feature_map.shape
         f_rest = feature_map
         f_hat = torch.zeros_like(f_rest)
@@ -106,7 +110,7 @@ class TokenSequentializer(nn.Module):
             ## before last stage
             for stage_i in range(SN):
                 token_len = self.t_scales[stage_i]
-                f_down = self.down_resampler(f_rest, M=token_len)  # B x token_len x D
+                f_down = self.down_resampler(f_rest, M=token_len, padding_mask = padding_mask)  # B x token_len x D
                 f_up = self.up_resampler(f_down, M=N)  # B x N x D
 
                 # f_down = F.interpolate(f_rest.transpose(1, 2), size=token_len, mode='linear', align_corners=True).transpose(1, 2)  # B x token_len x D
@@ -115,9 +119,9 @@ class TokenSequentializer(nn.Module):
                 phi = self.quant_resi[stage_i/(SN-1)]
                 
                 gt_residual_fm.append(f_down)
-                f_resi = phi(f_up)
-                f_rest = f_rest - f_resi  # B x N x D
-                f_hat = f_hat + f_resi
+                f_resi = phi(f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+                f_rest = (f_rest - f_resi).masked_fill(padding_mask.unsqueeze(-1), 0.0)   # B x N x D
+                f_hat = (f_hat + f_resi).masked_fill(padding_mask.unsqueeze(-1), 0.0)
             ## last stage
             gt_residual_fm.append(f_rest)
         return gt_residual_fm
@@ -125,7 +129,7 @@ class TokenSequentializer(nn.Module):
 
 
     # ---------------------- training sar only --------------------------#
-    def generate_different_scale_gt(self, gt_residual_fm:List[torch.Tensor]) -> torch.Tensor:
+    def generate_different_scale_gt(self, gt_residual_fm:List[torch.Tensor], padding_mask = None) -> torch.Tensor:
         next_scales = []
         B = gt_residual_fm[0].shape[0]
         D = self.embed_dim
@@ -141,20 +145,20 @@ class TokenSequentializer(nn.Module):
             for ti in range(SN):
                 f_down = gt_residual_fm[ti]
                 f_up = self.up_resampler(f_down, M=N)  # B x N x D
-                f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up)
+                f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
                 token_len_next = self.t_scales[ti + 1]
-                next_scales.append(self.down_resampler(f_hat, M=token_len_next))  # B x token_len_next x D
+                next_scales.append(self.down_resampler(f_hat, M=token_len_next, padding_mask = padding_mask))  # B x token_len_next x D
             
             ## last stage
             f_down = gt_residual_fm[-1]
             f_up = f_down
-            f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up)
-            next_scales.append(f_hat)  # B x token_len_next x D
+            f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+            next_scales.append(f_hat)  # B x N x D
 
 
         return torch.cat(next_scales, dim=1)  # B x (sum of token lens) x D
     
-    def get_fhat_from_residual_fm(self, inference_residual_fm:List[torch.Tensor]) -> torch.Tensor:
+    def get_fhat_from_residual_fm(self, inference_residual_fm:List[torch.Tensor],padding_mask = None) -> torch.Tensor:
         B = inference_residual_fm[0].shape[0]
         D = self.embed_dim
         N = inference_residual_fm[-1].shape[1]
@@ -168,25 +172,28 @@ class TokenSequentializer(nn.Module):
             for ti in range(SN):
                 f_down = inference_residual_fm[ti]
                 f_up = self.up_resampler(f_down, M=N)  # B x N x D
-                f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up)
+                f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
             ## last stage
             f_down = inference_residual_fm[-1]
             f_up = f_down
-            f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up)
+            f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
 
         return f_hat
 
-    def get_next_autoregressive_input(self, stage_i, SN, f_hat, hs):
+    def get_next_autoregressive_input(self, stage_i, SN, f_hat, hs, padding_mask = None):
+        '''
+            Get the next input feature map for auto-regressive model
+        '''
         if self.use_prior_cluster:
             raise NotImplementedError
         else:
             N = self.t_scales[-1]
             if stage_i != SN - 1:
-                h = self.quant_resi[stage_i/(SN-1)](self.up_resampler(hs, M=N))
+                h = self.quant_resi[stage_i/(SN-1)](self.up_resampler(hs, M=N)).masked_fill(padding_mask.unsqueeze(-1), 0.0)
                 f_hat += h
-                return f_hat, self.down_resampler(f_hat,size = self.t_scales[stage_i + 1])
+                return f_hat, self.down_resampler(f_hat, size = self.t_scales[stage_i + 1], padding_mask = padding_mask)
             else:
-                h = self.quant_resi[stage_i/(SN-1)](hs)
+                h = self.quant_resi[stage_i/(SN-1)](hs).masked_fill(padding_mask.unsqueeze(-1), 0.0)
                 f_hat += h
                 return f_hat, f_hat
 
@@ -218,7 +225,7 @@ class PhiAttention(nn.Module):
         self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
         self.norm = nn.LayerNorm(embed_dim)
     
-    def forward(self, token_map):
+    def forward(self, token_map, padding_mask = None):
         """
         token_map: B x N x D
         """
@@ -226,7 +233,7 @@ class PhiAttention(nn.Module):
         x = self.norm(token_map)
         
         # 自注意力（Q=K=V=x）
-        attn_out, _ = self.attn(x, x, x)
+        attn_out, _ = self.attn(x, x, x, key_padding_mask = padding_mask)  # B x N x D
         
         # 残差控制：与Conv1d版本的 phi_out.mul(resi_ratio) 类似
         out = token_map * (1 - self.resi_ratio) + attn_out * self.resi_ratio
@@ -275,7 +282,7 @@ class DiscreteResampler(nn.Module):
         super().__init__()
         self.attn = nn.MultiheadAttention(d_model, nhead, batch_first=True)
 
-    def forward(self, x, M: int):
+    def forward(self, x, M: int, padding_mask = None):
         """
         x: (B, N, D)
         M: 输出token数
@@ -287,5 +294,5 @@ class DiscreteResampler(nn.Module):
         query_embed = query_embed.repeat(B, 1, 1)
 
         # 注意力加权
-        y, _ = self.attn(query_embed, x, x)  # (B, M, D)
+        y, _ = self.attn(query_embed, x, x, key_padding_mask = padding_mask)  # (B, M, D)
         return y
