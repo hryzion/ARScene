@@ -13,12 +13,17 @@ class TokenSequentializer(nn.Module):
         embed_dim = 128,
         resi_ratio = 0.5,
         share_phi = 1,  # 0: non-shared, 1: shared, 2: partially-shared 
-        use_prior_cluster = False,           
+        use_prior_cluster = False,     
+        t_scales = [1, 2, 4, 7, 11]      
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.resi_ratio = resi_ratio
         self.use_prior_cluster = use_prior_cluster
+
+        self.down_resampler = DiscreteResampler(d_model=embed_dim, nhead=4)
+        self.up_resampler = DiscreteResampler(d_model=embed_dim, nhead=4)
+
         if share_phi == 1:
             self.seq_resi = PhiShared(
                 Phi(embed_dim=embed_dim, resi_ratio=resi_ratio)
@@ -36,7 +41,7 @@ class TokenSequentializer(nn.Module):
         else:
             # pre-define perceptual length scales
             # model learn itself how to use different-scale token map to describe a scene
-            self.t_scales = [1, 2, 4, 7, 11]
+            self.t_scales = t_scales
 
     # ---------------------- training encoder-decoder only --------------------------#
     def forward(self, feature_map : torch.Tensor):
@@ -55,57 +60,69 @@ class TokenSequentializer(nn.Module):
         f_hat = torch.zeros_like(f_rest)
 
 
-        # pseudo version code: 
-        # ZHX Note: TODO need to reconsturct!!
-        # WRONG IMPLEMENTATION : **low resolution to high resolution**
-        for level in range(10):
-            m = N // (2 ** (level + 1))
-            if m < 1:
-                break
-            f_down = F.interpolate(f_rest.transpose(1, 2), size=m, mode='linear', align_corners=True).transpose(1, 2)  # B x m x D
-            f_up = F.interpolate(f_down.transpose(1, 2), size=N, mode='linear', align_corners=True).transpose(1, 2)  # B x N x D
+        if self.use_prior_cluster:
+            raise NotImplementedError
+        else:
+            ## use linear interpolation.
+            SN = len(self.t_scales)
 
-            if isinstance(self.seq_resi, PhiShared):
-                phi = self.seq_resi[0]
-            elif isinstance(self.seq_resi, PhiNonShared):
-                phi = self.seq_resi[level]
-            else:  # partially-shared
-                phi = self.seq_resi[level / 9]  # level from 0 to 9
+            ## before last stage
+            for stage_i in range(SN):
+                token_len = self.t_scales[stage_i]
+                f_down = self.down_resampler(f_rest, M=token_len)  # B x token_len x D
+                f_up = self.up_resampler(f_down, M=N)  # B x N x D
+                # f_down = F.interpolate(f_rest.transpose(1,2), size=token_len, mode = 'linear', align_corners=True).transpose(1,2)  # B x token_len x D
+                # f_up = F.interpolate(f_down.transpose(1,2), size=N, mode = 'linear', align_corners=True).transpose(1,2)  # B x N x D
 
-            f_resi = phi(f_up)
+                phi = self.quant_resi[stage_i/(SN-1)]
+                
+                f_resi = phi(f_up)
+                f_rest = f_rest - f_resi  # B x N x D
+                f_hat = f_hat + f_resi
+
+            ## last stage
+            f_resi = phi(f_rest)
             f_rest = f_rest - f_resi  # B x N x D
             f_hat = f_hat + f_resi
+
         
-        return f_hat
+            return f_hat
+            
     
 
 
     # ---------------------- training sar only --------------------------#
-    def generate_gt_residual_fm(self, feature_map: torch.Tensor) -> List[torch.Tensor]:
+    def generate_residual_fm_gt(self, feature_map: torch.Tensor) -> List[torch.Tensor]:
         B, N, D = feature_map.shape
         f_rest = feature_map
         f_hat = torch.zeros_like(f_rest)
         gt_residual_fm : List[torch.Tensor] = []
-        for level in range(10):
-            m = N // (2 ** (level + 1))
-            if m < 1:
-                break
-            f_down = F.interpolate(f_rest.transpose(1, 2), size=m, mode='linear', align_corners=True).transpose(1, 2)  # B x m x D
-            f_up = F.interpolate(f_down.transpose(1, 2), size=N, mode='linear', align_corners=True).transpose(1, 2)  # B x N x D
 
-            if isinstance(self.seq_resi, PhiShared):
-                phi = self.seq_resi[0]
-            elif isinstance(self.seq_resi, PhiNonShared):
-                phi = self.seq_resi[level]
-            else:  # partially-shared
-                phi = self.seq_resi[level / 9]  # level from 0 to 9
+        if self.use_prior_cluster:
+            raise NotImplementedError
 
-            gt_residual_fm.append(f_down)
-            f_resi = phi(f_up)
-            f_rest = f_rest - f_resi  # B x N x D
-            f_hat = f_hat + f_resi
-        
+        else:
+            SN = len(self.t_scales)
+            ## before last stage
+            for stage_i in range(SN):
+                token_len = self.t_scales[stage_i]
+                f_down = self.down_resampler(f_rest, M=token_len)  # B x token_len x D
+                f_up = self.up_resampler(f_down, M=N)  # B x N x D
+
+                # f_down = F.interpolate(f_rest.transpose(1, 2), size=token_len, mode='linear', align_corners=True).transpose(1, 2)  # B x token_len x D
+                # f_up = F.interpolate(f_down.transpose(1, 2), size=N, mode='linear', align_corners=True).transpose(1, 2)  # B x N x D
+
+                phi = self.quant_resi[stage_i/(SN-1)]
+                
+                gt_residual_fm.append(f_down)
+                f_resi = phi(f_up)
+                f_rest = f_rest - f_resi  # B x N x D
+                f_hat = f_hat + f_resi
+            ## last stage
+            gt_residual_fm.append(f_rest)
         return gt_residual_fm
+
+
 
     # ---------------------- training sar only --------------------------#
     def generate_different_scale_gt(self, gt_residual_fm:List[torch.Tensor]) -> torch.Tensor:
@@ -113,32 +130,63 @@ class TokenSequentializer(nn.Module):
         B = gt_residual_fm[0].shape[0]
         D = self.embed_dim
         N = gt_residual_fm[-1].shape[1] # last residual token map is the final scale
-        SL = len(self.t_scales)
+        SN = len(self.t_scales)
 
         f_hat = gt_residual_fm[0].new_zeros(B, N, D)
         if self.use_prior_cluster:
             raise NotImplementedError
         else:
             token_len_next = self.t_scales[0]
-            for ti in range(SL):
+            ## before last stage
+            for ti in range(SN):
                 f_down = gt_residual_fm[ti]
-                f_up = F.interpolate(f_down.transpose(1, 2), size=N, mode='linear', align_corners=True).transpose(1, 2)  # B x N x D
-                f_hat = f_hat + self.quant_resi[ti](f_up)
+                f_up = self.up_resampler(f_down, M=N)  # B x N x D
+                f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up)
                 token_len_next = self.t_scales[ti + 1]
-                next_scales.append(F.interpolate(f_hat.transpose(1, 2), size=token_len_next, mode='linear', align_corners=True).transpose(1, 2))
+                next_scales.append(self.down_resampler(f_hat, M=token_len_next))  # B x token_len_next x D
+            
+            ## last stage
+            f_down = gt_residual_fm[-1]
+            f_up = f_down
+            f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up)
+            next_scales.append(f_hat)  # B x token_len_next x D
+
+
         return torch.cat(next_scales, dim=1)  # B x (sum of token lens) x D
     
+    def get_fhat_from_residual_fm(self, inference_residual_fm:List[torch.Tensor]) -> torch.Tensor:
+        B = inference_residual_fm[0].shape[0]
+        D = self.embed_dim
+        N = inference_residual_fm[-1].shape[1]
+        SN = len(self.t_scales)
+
+        f_hat = inference_residual_fm[0].new_zeros(B, N, D)
+        if self.use_prior_cluster:
+            raise NotImplementedError
+        else:
+            ## before last stage
+            for ti in range(SN):
+                f_down = inference_residual_fm[ti]
+                f_up = self.up_resampler(f_down, M=N)  # B x N x D
+                f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up)
+            ## last stage
+            f_down = inference_residual_fm[-1]
+            f_up = f_down
+            f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up)
+
+        return f_hat
+
     def get_next_autoregressive_input(self, stage_i, SN, f_hat, hs):
         if self.use_prior_cluster:
             raise NotImplementedError
         else:
             N = self.t_scales[-1]
             if stage_i != SN - 1:
-                h = self.quant_resi[stage_i](F.interpolate(hs, size=N))
+                h = self.quant_resi[stage_i/(SN-1)](self.up_resampler(hs, M=N))
                 f_hat += h
-                return f_hat, F.interpolate(f_hat,size = self.t_scales[stage_i + 1])
+                return f_hat, self.down_resampler(f_hat,size = self.t_scales[stage_i + 1])
             else:
-                h = self.quant_resi[stage_i](hs)
+                h = self.quant_resi[stage_i/(SN-1)](hs)
                 f_hat += h
                 return f_hat, f_hat
 
@@ -148,14 +196,42 @@ class Phi(nn.Conv1d):
         super().__init__(in_channels=embed_dim, out_channels=embed_dim, kernel_size=kernel_size, padding=kernel_size//2) 
         self.resi_ratio = resi_ratio
     
-    def forward(self, feature_map):
+    def forward(self, token_map):
         '''
-            feature_map: B x N x D
+            token_map: B x N x D
         '''
         
-        phi_out = super().forward(feature_map.transpose(1, 2)).transpose(1, 2)  # B x N x D
-        return phi_out*(1-self.resi_ratio) + feature_map*self.resi_ratio
+        phi_out = super().forward(token_map.transpose(1, 2)).transpose(1, 2)  # B x N x D
+        return phi_out*(1-self.resi_ratio) + token_map*self.resi_ratio
     
+
+class PhiAttention(nn.Module):
+    def __init__(self, embed_dim, resi_ratio, num_heads=4):
+        """
+        Args:
+            embed_dim: 每个 token 的特征维度 D
+            resi_ratio: 残差比例 (0~1)
+            num_heads: 注意力头数
+        """
+        super().__init__()
+        self.resi_ratio = resi_ratio
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        self.norm = nn.LayerNorm(embed_dim)
+    
+    def forward(self, token_map):
+        """
+        token_map: B x N x D
+        """
+        # 归一化输入（LayerNorm在Attention前）
+        x = self.norm(token_map)
+        
+        # 自注意力（Q=K=V=x）
+        attn_out, _ = self.attn(x, x, x)
+        
+        # 残差控制：与Conv1d版本的 phi_out.mul(resi_ratio) 类似
+        out = token_map * (1 - self.resi_ratio) + attn_out * self.resi_ratio
+        
+        return out
 
 class PhiShared(nn.Module):
     def __init__(self, qresi: Phi):
@@ -192,3 +268,24 @@ class PhiNonShared(nn.ModuleList):
     
     def extra_repr(self) -> str:
         return f'ticks={self.ticks}'
+
+
+class DiscreteResampler(nn.Module):
+    def __init__(self, d_model, nhead=4):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(d_model, nhead, batch_first=True)
+
+    def forward(self, x, M: int):
+        """
+        x: (B, N, D)
+        M: 输出token数
+        """
+        B, N, D = x.shape
+        # 可学习的输出query（或根据M动态生成）
+        query = torch.linspace(0, 1, M, device=x.device).unsqueeze(0).unsqueeze(-1)  # (1, M, 1)
+        query_embed = torch.sin(query * torch.arange(D, device=x.device) / D * 3.1415)  # 简单位置编码 (1,M,D)
+        query_embed = query_embed.repeat(B, 1, 1)
+
+        # 注意力加权
+        y, _ = self.attn(query_embed, x, x)  # (B, M, D)
+        return y
