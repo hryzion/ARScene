@@ -54,7 +54,7 @@ def main(argv):
     args = parser.parse_args(argv)
 
     model_meta = np.load('../datasets/model_meta.npy')
-    for model in tqdm.tqdm(model_meta[4950:]):
+    for model in tqdm.tqdm(model_meta):
         # if model == '7465':
         #     continue
         model_dir = os.path.join(SOURCE_3D_FUTURE_DIR, model)
@@ -77,6 +77,7 @@ def main(argv):
         # Compute location and scale
         loc = (bbox[0] + bbox[1]) / 2
         scale = (bbox[1] - bbox[0]).max() / (1 - args.bbox_padding)
+        size = abs(bbox[1]-bbox[0])
 
         # Transform input mesh
         mesh.apply_translation(-loc)
@@ -95,7 +96,7 @@ def main(argv):
 
         filename = raw_model_path[:-4] + "_norm_pc.npz"
         # print('Writing pointcloud: %s' % filename)
-        np.savez(filename, points=points, normals=normals, loc=loc, scale=scale)
+        np.savez(filename, points=points, normals=normals, loc=loc, scale=scale, size=size)
 
 
 

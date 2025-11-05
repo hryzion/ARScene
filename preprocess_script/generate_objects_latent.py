@@ -43,7 +43,10 @@ def main():
             category = models_category[model_id]
             if category not in models_meta_wi_lat:
                 models_meta_wi_lat[category] = {}
-            models_meta_wi_lat[category][model_id] = lat.squeeze(0).tolist()
+            models_meta_wi_lat[category][model_id] = {
+                "latent":lat.squeeze(0).tolist(),
+                "size": data['size'][0].tolist()
+            }
             model_latent.append(lat)
 
             # save_path = os.path.join(SOURCE_3D_FUTURE_DIR, model_id, f'{model_id}_norm_pc_latent.npz')

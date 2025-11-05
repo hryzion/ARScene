@@ -152,11 +152,15 @@ class ThreedFuturePCDataset(Dataset):
     def __getitem__(self, index):
         model_id = self.model_meta[index]
         pc_path = os.path.join(self.model_dir, model_id, f'{model_id}_norm_pc.npz')
-        points = np.load(pc_path)['points']
+        model_info = np.load(pc_path)
+        points = model_info['points']
         points_subsample = points[np.random.choice(points.shape[0], self.num_samples), :]
+        size = model_info['size']
         points_torch = torch.from_numpy(points_subsample).float()
+        
         return {
                 'points': points_torch,
+                'size': size,
                 'model_id': model_id
             }
     

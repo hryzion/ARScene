@@ -163,7 +163,8 @@ def decode_obj_token(obj_token):
     latent = obj_token[len(THREED_FRONT_CATEGORY)+15:]
 
     coarse_semantic = THREED_FRONT_CATEGORY[np.argmax(cs)]
-    model_id = get_modelid_by_latent(latent, coarse_semantic)
+    q_size =  abs(bbox_max - bbox_min)
+    model_id = get_modelid_by_latent_and_size(latent, q_size, coarse_semantic)
 
     return {
         'coarseSemantic': coarse_semantic,
@@ -180,19 +181,26 @@ def decode_obj_token(obj_token):
     }
 
 
-def get_modelid_by_latent(latent, category):
+def get_modelid_by_latent_and_size(q_latent, q_size, category):
     global MODEL_LATENTS
     if category not in MODEL_LATENTS:
         return None
-    min_dist = float('inf')
-    best_model_id = None
-    for model_id, model_latent in MODEL_LATENTS[category].items():
-        model_latent = np.array(model_latent)
-        dist = np.linalg.norm(latent - model_latent)
-        if dist < min_dist:
-            min_dist = dist
-            best_model_id = model_id
-    return best_model_id
+
+    model_ids = []
+    mses_latent = []
+    mses_size = []
+
+    for model_id, model_latent_and_size in MODEL_LATENTS[category].items():
+        model_latent = np.array(model_latent_and_size['latent'])
+        model_size = np.array(model_latent_and_size['size'])
+
+        model_ids.append(model_id)
+        mses_latent.append(np.sum((q_latent - model_latent)**2))
+        mses_size.append(np.sum((q_size - model_size)**2))
+
+    ind = np.lexsort((mses_latent, mses_size))
+
+    return model_ids[ind[0]]
 
 def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask):
     """
