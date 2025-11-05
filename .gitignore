@@ -5,3 +5,4 @@ datasets/models
 visualizations
 *.npy
 datasets/processed_old
+wandb/

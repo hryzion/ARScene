@@ -33,7 +33,7 @@ class TokenSequentializer(nn.Module):
                 [PhiAttention(embed_dim=embed_dim, resi_ratio=resi_ratio) for _ in range(10)]
             )
         else:
-            self.quant_resi = PhiPartiallyShared(nn.ModuleList([(PhiAttention(embed_dim, resi_ratio) if abs(resi_ratio) > 1e-6 else nn.Identity()) for _ in range(share_phi)]))
+            self.seq_resi = PhiPartiallyShared(nn.ModuleList([(PhiAttention(embed_dim, resi_ratio) if abs(resi_ratio) > 1e-6 else nn.Identity()) for _ in range(share_phi)]))
 
         if self.use_prior_cluster:
             # TODO: prior cluster info inject there, explicitly
@@ -77,7 +77,7 @@ class TokenSequentializer(nn.Module):
                 # f_down = F.interpolate(f_rest.transpose(1,2), size=token_len, mode = 'linear', align_corners=True).transpose(1,2)  # B x token_len x D
                 # f_up = F.interpolate(f_down.transpose(1,2), size=N, mode = 'linear', align_corners=True).transpose(1,2)  # B x N x D
 
-                phi = self.quant_resi[stage_i/(SN-1)]
+                phi = self.seq_resi[stage_i/(SN-1)]
                 
                 f_resi = phi(f_up).masked_fill(mask_cat.unsqueeze(-1), 0.0)
                 f_rest = (f_rest - f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)  # B x N x D
@@ -116,7 +116,7 @@ class TokenSequentializer(nn.Module):
                 # f_down = F.interpolate(f_rest.transpose(1, 2), size=token_len, mode='linear', align_corners=True).transpose(1, 2)  # B x token_len x D
                 # f_up = F.interpolate(f_down.transpose(1, 2), size=N, mode='linear', align_corners=True).transpose(1, 2)  # B x N x D
 
-                phi = self.quant_resi[stage_i/(SN-1)]
+                phi = self.seq_resi[stage_i/(SN-1)]
                 
                 gt_residual_fm.append(f_down)
                 f_resi = phi(f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
@@ -145,14 +145,14 @@ class TokenSequentializer(nn.Module):
             for ti in range(SN):
                 f_down = gt_residual_fm[ti]
                 f_up = self.up_resampler(f_down, M=N)  # B x N x D
-                f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+                f_hat = f_hat + self.seq_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
                 token_len_next = self.t_scales[ti + 1]
                 next_scales.append(self.down_resampler(f_hat, M=token_len_next, padding_mask = padding_mask))  # B x token_len_next x D
             
             ## last stage
             f_down = gt_residual_fm[-1]
             f_up = f_down
-            f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+            f_hat = f_hat + self.seq_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
             next_scales.append(f_hat)  # B x N x D
 
 
@@ -172,11 +172,11 @@ class TokenSequentializer(nn.Module):
             for ti in range(SN):
                 f_down = inference_residual_fm[ti]
                 f_up = self.up_resampler(f_down, M=N)  # B x N x D
-                f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+                f_hat = f_hat + self.seq_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
             ## last stage
             f_down = inference_residual_fm[-1]
             f_up = f_down
-            f_hat = f_hat + self.quant_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+            f_hat = f_hat + self.seq_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
 
         return f_hat
 
@@ -189,11 +189,11 @@ class TokenSequentializer(nn.Module):
         else:
             N = self.t_scales[-1]
             if stage_i != SN - 1:
-                h = self.quant_resi[stage_i/(SN-1)](self.up_resampler(hs, M=N)).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+                h = self.seq_resi[stage_i/(SN-1)](self.up_resampler(hs, M=N)).masked_fill(padding_mask.unsqueeze(-1), 0.0)
                 f_hat += h
                 return f_hat, self.down_resampler(f_hat, size = self.t_scales[stage_i + 1], padding_mask = padding_mask)
             else:
-                h = self.quant_resi[stage_i/(SN-1)](hs).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+                h = self.seq_resi[stage_i/(SN-1)](hs).masked_fill(padding_mask.unsqueeze(-1), 0.0)
                 f_hat += h
                 return f_hat, f_hat
 

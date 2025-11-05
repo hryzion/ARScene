@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from quant import TokenSequentializer
+from .quant import TokenSequentializer
 
 
 class TransformerBlock(nn.Module):
@@ -91,7 +91,7 @@ class SceneLayoutTokenDecoder(nn.Module):
 
 
 class RoomLayoutVQVAE(nn.Module):
-    def __init__(self, token_dim=64, num_embeddings=512, enc_depth=4, dec_depth=4, heads=4, args = None):
+    def __init__(self, token_dim=64, num_embeddings=512, enc_depth=4, dec_depth=4, heads=4, configs = None):
         super().__init__()
 
         # VQVAE encoder and decoder
@@ -100,23 +100,23 @@ class RoomLayoutVQVAE(nn.Module):
 
         self.token_sequentializer = TokenSequentializer(embed_dim=token_dim, resi_ratio=0.5, share_phi=1, use_prior_cluster=False)
         self.decoder = SceneLayoutTokenDecoder(token_dim, depth=dec_depth, heads=heads)
-        self.args = args
+        self.configs = configs
 
 
     def forward(self, x, padding_mask=None):  # x: [B, N, D], mask: [B, N]
         z = self.encoder(x, padding_mask=padding_mask) # B, N+1, D
-        if self.args.bottleneck == 'ae':
+        if self.configs['model']['bottleneck'] == 'ae':
             z_q = z
             vq_loss = torch.tensor(0.0, device=z.device)
             indices = None
-        elif self.args.bottleneck == 'vqvae':
+        elif self.configs['model']['bottleneck'] == 'vqvae':
             z_q, vq_loss, indices = self.quantizer(z) # B, N+1, D   
-        elif self.args.bottleneck == 'residual-vae':
+        elif self.configs['model']['bottleneck'] == 'residual-vae':
             z_q = self.token_sequentializer(z, padding_mask=padding_mask)
             vq_loss = torch.tensor(0.0, device=z.device)
             indices = None
         else:
-            raise NotImplementedError(f"Unknown bottleneck type: {self.args.bottleneck}")
+            raise NotImplementedError(f"Unknown bottleneck type: {self.configs['model']['bottleneck']}")
 
         x = self.decoder(z_q, padding_mask=padding_mask) 
         root = x[:, :1, :]    # B, 1, D
