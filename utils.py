@@ -113,7 +113,7 @@ def get_room_attributes(room):
     centralize_room(room)
     room_info = {
         'room_type' : room['roomTypes'][0], # one-hot ['livingRoom', "bedroom", 'diningRoom']
-        'room_shape' : render_room_shape_image_centered(room) # list of 2d points
+        'room_shape' : render_room_shape_image_centered(room) 
     }
     obj_tokens = []
     for obj in room['objList']:
@@ -122,6 +122,209 @@ def get_room_attributes(room):
             obj_tokens.append(obj_token)
     obj_tokens = np.array(obj_tokens, dtype=np.float32)
     return room_info, obj_tokens
+
+import math
+
+def compute_rel(box1, box2):
+    center1 = np.array([(box1[0] + box1[3]) / 2, (box1[1] + box1[4]) / 2, (box1[2] + box1[5]) / 2])
+    center2 = np.array([(box2[0] + box2[3]) / 2, (box2[1] + box2[4]) / 2, (box2[2] + box2[5]) / 2])
+
+    # random relationship
+    sx0, sy0, sz0, sx1, sy1, sz1 = box1
+    ox0, oy0, oz0, ox1, oy1, oz1 = box2
+    d = center1 - center2
+    theta = math.atan2(d[2], d[0])  # range -pi to pi
+
+    distance = (d[2]**2 + d[0]**2)**0.5
+    
+    # "on" relationship
+    p = None
+    if center1[0] >= box2[0] and center1[0] <= box2[3]:
+        if center1[2] >= box2[2] and center1[2] <= box2[5]:
+            delta1 = center1[1] - center2[1]
+            delta2 = (box1[4] - box1[1] + box2[4] - box2[1]) / 2
+            if 0 <(delta1 - delta2) < 0.05:
+                p = 'on'
+            elif 0.05 < (delta1 - delta2):
+                p = 'above'
+        return p, distance
+
+    # eliminate relation in vertical axis now
+    if abs(d[1]) > 0.5:
+        return p, distance
+
+    area_s = (sx1 - sx0) * (sz1 - sz0)
+    area_o = (ox1 - ox0) * (oz1 - oz0)
+    ix0, ix1 = max(sx0, ox0), min(sx1, ox1)
+    iz0, iz1 = max(sz0, oz0), min(sz1, oz1)
+    area_i = max(0, ix1 - ix0) * max(0, iz1 - iz0)
+    iou = area_i / (area_s + area_o - area_i)
+    touching = 0.0001 < iou < 0.5
+
+    if sx0 < ox0 and sx1 > ox1 and sz0 < oz0 and sz1 > oz1:
+        p = 'surrounding'
+    elif sx0 > ox0 and sx1 < ox1 and sz0 > oz0 and sz1 < oz1:
+        p = 'inside'
+    # 60 degree intervals along each direction
+    elif theta >= 5 * math.pi / 6 or theta <= -5 * math.pi / 6:
+        p = 'right touching' if touching else 'left of'
+    elif -2 * math.pi / 3 <= theta < -math.pi / 3:
+        p = 'behind touching' if touching else 'behind'
+    elif -math.pi / 6 <= theta < math.pi / 6:
+        p = 'left touching' if touching else 'right of'
+    elif math.pi / 3 <= theta < 2 * math.pi / 3:
+        p = 'front touching' if touching else 'in front of'
+
+    return p, distance
+
+def dict_bbox_to_vec(dict_box):
+    '''
+    input: {'min': [1,2,3], 'max': [4,5,6]}
+    output: [1,2,3,4,5,6]
+    '''
+    return dict_box['min'] + dict_box['max']
+
+## similar as DiffuScene
+def get_room_relationship(centred_room):
+    relations=[]
+    for i, obj in enumerate(centred_room['objList']):
+        this_box_trans = np.array(obj['translate'])
+        this_box_size = abs(np.array(obj['bbox']['max']) - np.array(obj['bbox']['min']))
+        this_box = obj['bbox']
+
+        choices = range(i)
+        for other_ndx in choices:
+            prev_obj = centred_room['objList'][other_ndx]
+            prev_box_trans = np.array(prev_obj['translate'])
+            prev_box_size = abs(np.array(prev_obj['bbox']['max']) - np.array(prev_obj['bbox']['min']))
+            prev_box = prev_obj['bbox']
+            box1 = dict_bbox_to_vec(this_box)
+            box2 = dict_bbox_to_vec(prev_box)
+
+            relation_str, distance = compute_rel(box1, box2)
+            if relation_str is not None:
+                relation = (i, relation_str, other_ndx, distance)
+                relations.append(relation)
+    return relations
+
+
+def get_cat_prority(category):
+    if category in ['sofa', 'bed']:
+        return 1
+    elif category in ['table', 'desk', 'chair']:
+        return 2
+    else:
+        return 3
+
+
+
+from collections import Counter, defaultdict
+import random
+
+def get_room_description(centred_room):
+    global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
+    sentences = []
+
+    obj_names= []
+    for obj in centred_room['objList']:
+        cat = obj['coarseSemantic']
+        if cat not in THREED_FRONT_FURNITURE:
+            continue
+        furniture_cat = THREED_FRONT_FURNITURE[cat]
+        cat_base = furniture_cat.split(' ')[-1]
+        obj_names.append(cat_base)
+    
+    obj_names.sort(key=get_cat_prority)
+    
+    first_n = random.choice([2, 3])
+    first_n_names = obj_names[:first_n] 
+    first_n_counts = Counter(first_n_names)
+    s = 'The room has '
+    for ndx, name in enumerate(sorted(set(first_n_names), key=first_n_names.index)):
+        if ndx == len(set(first_n_names)) - 1 and len(set(first_n_names)) >= 2:
+            s += "and "
+        if first_n_counts[name] > 1:
+            s += f'{num2words(first_n_counts[name])} {name}s '
+        else:
+            s += f'{get_article(name)} {name} '
+        if ndx == len(set(first_n_names)) - 1:
+            s += ". "
+        if ndx < len(set(first_n_names)) - 2:
+            s += ', '
+    sentences.append(s)
+
+    refs = set(range(first_n))
+    seen_counts = defaultdict(int)
+    in_cls_pos = [0 for _ in obj_names]
+    for ndx, name in enumerate(first_n_names):
+        seen_counts[name] += 1
+        in_cls_pos[ndx] = seen_counts[name]
+
+    
+    relations = get_room_relationship(centred_room)
+
+    for ndx in range(1, len(obj_names)):
+        # higher prob of describing the 2nd object
+        prob_thresh = 0.3
+            
+       
+        random_num = random.random() 
+        if random_num > prob_thresh:
+            # possible backward references for this object
+            possible_relations = [r for r in relations \
+                                    if r[0] == ndx \
+                                    and r[2] in refs \
+                                    and r[3] < 1.5]
+            if len(possible_relations) == 0:
+                continue
+            # now future objects can refer to this object
+            refs.add(ndx)
+
+            # if we haven't seen this object already
+            if in_cls_pos[ndx] == 0:
+                # update the number of objects of this class which have been seen
+                seen_counts[obj_names[ndx]] += 1
+                # update the in class position of this object = first, second ..
+                in_cls_pos[ndx] = seen_counts[obj_names[ndx]]
+
+            # pick any one
+            
+            (n1, rel, n2, dist) = random.choice(possible_relations)
+            o1 = obj_names[n1]
+            o2 = obj_names[n2]
+
+            # prepend "second", "third" for repeated objects
+            if seen_counts[o1] > 1:
+                o1 = f'{num2words(in_cls_pos[n1], ordinal=True)} {o1}'
+            if seen_counts[o2] > 1:
+                o2 = f'{num2words(in_cls_pos[n2], ordinal=True)} {o2}'
+
+            # dont relate objects of the same kind
+            if o1 == o2:
+                continue
+
+            a1 = get_article(o1)
+
+            if 'touching' in rel:
+                if ndx in (1, 2):
+                    s = F'The {o1} is next to the {o2}'
+                else:
+                    s = F'There is {a1} {o1} next to the {o2}'
+            elif rel in ('left of', 'right of'):
+                if ndx in (1, 2):
+                    s = f'The {o1} is to the {rel} the {o2}'
+                else:
+                    s = f'There is {a1} {o1} to the {rel} the {o2}'
+            elif rel in ('surrounding', 'inside', 'behind', 'in front of', 'on', 'above'):
+                if ndx in (1, 2):
+                    s = F'The {o1} is {rel} the {o2}'
+                else:
+                    s = F'There is {a1} {o1} {rel} the {o2}'
+            s += ' . '
+            sentences.append(s)
+    return ' '.join(sentences)
+    
+
 
 def embed_obj_token(obj):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
@@ -817,10 +1020,13 @@ class BboxFINCH:
             return None
 
 def Finch_cluster(json_file,room_id, distance_metric='min_distance'):
-    """json_file: 场景布局json文件路径
+    """
+    json_file: 场景布局json文件路径
     room_id: 房间id, start from 0
-    返回值：{"label":label,"label_optimal":label_optimal}label为层次划分聚类结果最“细”的标签，label_optimal为层次划分聚类结果轮廓系数最优的标签
-    label中家具与标签按顺序对应，拥有相同标签的家具为同一类"""
+    返回值：{"label":label,"label_optimal":label_optimal}label为层次划分聚类结果最“细”的标签，
+    label_optimal为层次划分聚类结果轮廓系数最优的标签
+    label中家具与标签按顺序对应，拥有相同标签的家具为同一类
+    """
     with open(json_file, 'r', encoding='utf-8') as f:
         try:
             data = json.load(f)

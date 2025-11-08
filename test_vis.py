@@ -41,7 +41,7 @@ def main():
 
 
     # 1. 初始化模型并加载权重
-    model = RoomLayoutVQVAE(token_dim=64, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, args=args).to(device)
+    model = RoomLayoutVQVAE(token_dim=64, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, configs=config).to(device)
 
     model.load_state_dict(torch.load(f'{save_path}', map_location=device))
     model.to(device)
