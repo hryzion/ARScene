@@ -1023,8 +1023,8 @@ def Finch_cluster(json_file,room_id, distance_metric='min_distance'):
     """
     json_file: 场景布局json文件路径
     room_id: 房间id, start from 0
-    返回值：{"label":label,"label_optimal":label_optimal}label为层次划分聚类结果最“细”的标签，
-    label_optimal为层次划分聚类结果轮廓系数最优的标签
+    返回值：{"labels":labels,"label_optimal":label_optimal}labels(L, N)为各层次下物体的聚类标签，
+    label_optimal(N, )为层次划分聚类结果轮廓系数最优的标签
     label中家具与标签按顺序对应，拥有相同标签的家具为同一类
     """
     with open(json_file, 'r', encoding='utf-8') as f:
@@ -1048,10 +1048,11 @@ def Finch_cluster(json_file,room_id, distance_metric='min_distance'):
 def sort_by_cluster(clustered_labels: list):
     '''
     clustered_labels: 聚类的标签，从Finch_cluster返回的结果中"labels"项
-    returns: 排序后的indices
+    returns: 排序后的indices(N, )
     '''
     return np.lexsort(tuple(clustered_labels))
 
 if __name__ == "__main__":
     print(len(THREED_FRONT_CATEGORY))
+
 
