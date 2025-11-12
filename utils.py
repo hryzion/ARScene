@@ -1042,10 +1042,16 @@ def Finch_cluster(json_file,room_id, distance_metric='min_distance'):
     finch = BboxFINCH(distance_metric='min_distance')
     finch.fit(obj_bboxes)
     partitions = finch.get_partitions()
-    label = partitions[0]
-    print("Partitions:", partitions)
     label_optimal = finch.get_optimal_partition()
-    return {"label":label,"label_optimal":label_optimal}
+    return {"labels":partitions,"label_optimal":label_optimal}
+
+def sort_by_cluster(clustered_labels: list):
+    '''
+    clustered_labels: 聚类的标签，从Finch_cluster返回的结果中"labels"项
+    returns: 排序后的indices
+    '''
+    return np.lexsort(tuple(clustered_labels))
 
 if __name__ == "__main__":
     print(len(THREED_FRONT_CATEGORY))
+
