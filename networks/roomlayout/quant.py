@@ -10,13 +10,14 @@ class TokenSequentializer(nn.Module):
         Implemented with residual-structured blocks.
     '''
     def __init__(self,
-        embed_dim = 128,
+        embed_dim = 128, vocab_size = 512, beta = 0.25,
         resi_ratio = 0.5,
         share_phi = 1,  # 0: non-shared, 1: shared, 2: partially-shared 
-        use_prior_cluster = False,     
+        use_prior_cluster = False, using_znorm = False,
         t_scales = [1, 2, 4, 7, 11]   # + N (last scale is the full resolution)
     ):
         super().__init__()
+        self.vocab_size = vocab_size
         self.embed_dim = embed_dim
         self.resi_ratio = resi_ratio
         self.use_prior_cluster = use_prior_cluster
@@ -34,6 +35,13 @@ class TokenSequentializer(nn.Module):
             )
         else:
             self.seq_resi = PhiPartiallyShared(nn.ModuleList([(PhiAttention(embed_dim, resi_ratio) if abs(resi_ratio) > 1e-6 else nn.Identity()) for _ in range(share_phi)]))
+
+        self.register_buffer('ema_vocab_hit', torch.full((len(t_scales) + 1, vocab_size),fill_value=0.0))
+        self.record_hit = 0
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.using_znorm = using_znorm
+        self.beta = beta
+
 
         if self.use_prior_cluster:
             # TODO: prior cluster info inject there, explicitly
@@ -59,7 +67,8 @@ class TokenSequentializer(nn.Module):
     
 
         B, N, D = feature_map.shape
-        f_rest = feature_map
+        f_no_grad = feature_map.detach()
+        f_rest = f_no_grad.clone()
         f_hat = torch.zeros_like(f_rest)
 
 
@@ -68,12 +77,22 @@ class TokenSequentializer(nn.Module):
         else:
             ## use linear interpolation.
             SN = len(self.t_scales)
+            mean_vq_loss: torch.Tensor = 0.0
+            vocab_hit_V = torch.zeros(self.vocab_size, dtype=torch.float, device=feature_map.device)
 
             ## before last stage
-            for stage_i in range(SN):
-                token_len = self.t_scales[stage_i]
-                f_down = self.down_resampler(f_rest, M=token_len, padding_mask = mask_cat)  # B x token_len x D
-                f_up = self.up_resampler(f_down, M=N)  # B x N x D
+            for stage_i in range(SN + 1):
+                token_len = self.t_scales[stage_i] if stage_i < SN else N
+                f_down = self.down_resampler(f_rest, M=token_len, padding_mask = mask_cat).reshape(-1,D) if stage_i < SN else f_rest.reshape(-1,D) # B x token_len x D
+                f_down = F.normalize(f_down, dim=-1)
+                idx_N = torch.argmax(f_down @ F.normalize(self.embedding.weight.T, dim=0), dim=1)  # n = B x token_len
+
+                hit_V = idx_N.bincount(minlength=self.vocab_size).float()  # vocab_size ## not user yet
+                
+                idx_BL = idx_N.view(B, token_len)  # B x token_len
+                f_down_hat = self.embedding(idx_BL)  # B x token_len x D
+
+                f_up = self.up_resampler(f_down_hat, M=N) if stage_i < SN else f_down_hat  # B x N x D
                 # f_down = F.interpolate(f_rest.transpose(1,2), size=token_len, mode = 'linear', align_corners=True).transpose(1,2)  # B x token_len x D
                 # f_up = F.interpolate(f_down.transpose(1,2), size=N, mode = 'linear', align_corners=True).transpose(1,2)  # B x N x D
 
@@ -83,14 +102,15 @@ class TokenSequentializer(nn.Module):
                 f_rest = (f_rest - f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)  # B x N x D
                 f_hat = (f_hat + f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)
 
-            ## last stage
-            f_resi = phi(f_rest).masked_fill(mask_cat.unsqueeze(-1), 0.0)
-            f_rest = (f_rest - f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)  # B x N x D
-            f_hat = (f_hat + f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)
+                # VQ loss
+                mean_vq_loss += F.mse_loss(f_hat.data, feature_map).mul_(self.beta) + F.mse_loss(f_hat, f_no_grad)
+            
+            mean_vq_loss = mean_vq_loss / (SN + 1)
+            f_hat = (f_hat.data-f_no_grad).add_(feature_map)  # straight-through trick
 
             
         
-            return f_hat
+            return f_hat, mean_vq_loss
             
     
 

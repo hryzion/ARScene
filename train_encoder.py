@@ -101,7 +101,8 @@ def train_model(
         wandb.log({
             'Train Loss': avg_train_recon,
             'Val Loss': avg_val_recon,
-            'epoch': epoch+1
+            'VQ Train Loss': avg_train_vq,
+            'VQ Val Loss': avg_val_vq
         })
         print(f"[Val] Epoch {epoch+1}: Loss={avg_val_loss:.4f}, Recon={avg_val_recon:.4f}, VQ={avg_val_vq:.4f}")
         if configs['model']['bottleneck'] == 'vqvae':
@@ -137,6 +138,7 @@ if __name__ == '__main__':
     BATCH_SIZE = int(super_parameters.get('batch_size', 16))
     NUM_EPOCHS = int(super_parameters.get('epochs', 200))
     LEARNING_RATE = float(super_parameters.get('learning_rate', 1e-4))
+    VQ_BETA = float(super_parameters.get('vq_beta', 0.25))
 
     model_config = config['model']
 
@@ -174,4 +176,4 @@ if __name__ == '__main__':
     model = RoomLayoutVQVAE(token_dim=64, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS,configs=config).to(device)
     criterion = ObjTokenReconstructionLoss()
     
-    train_model(model, train_loader, val_loader, device,num_epochs=NUM_EPOCHS, criterion=criterion, save_path=save_path,configs=config)
+    train_model(model, train_loader, val_loader, device, beta=VQ_BETA, lr=LEARNING_RATE, num_epochs=NUM_EPOCHS, criterion=criterion, save_path=save_path,configs=config)

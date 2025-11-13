@@ -98,7 +98,7 @@ class RoomLayoutVQVAE(nn.Module):
         self.encoder = SceneLayoutTokenEncoder(token_dim, depth=enc_depth, heads=heads)
         self.quantizer = VectorQuantizer(num_embeddings, token_dim)
 
-        self.token_sequentializer = TokenSequentializer(embed_dim=token_dim, resi_ratio=0.5, share_phi=1, use_prior_cluster=False)
+        self.token_sequentializer = TokenSequentializer(embed_dim=token_dim, vocab_size=num_embeddings, resi_ratio=0.5, share_phi=1, use_prior_cluster=False)
         self.decoder = SceneLayoutTokenDecoder(token_dim, depth=dec_depth, heads=heads)
         self.configs = configs
 
@@ -112,8 +112,7 @@ class RoomLayoutVQVAE(nn.Module):
         elif self.configs['model']['bottleneck'] == 'vqvae':
             z_q, vq_loss, indices = self.quantizer(z) # B, N+1, D   
         elif self.configs['model']['bottleneck'] == 'residual-vae':
-            z_q = self.token_sequentializer(z, padding_mask=padding_mask)
-            vq_loss = torch.tensor(0.0, device=z.device)
+            z_q, vq_loss = self.token_sequentializer(z, padding_mask=padding_mask)
             indices = None
         else:
             raise NotImplementedError(f"Unknown bottleneck type: {self.configs['model']['bottleneck']}")
