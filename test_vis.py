@@ -75,14 +75,14 @@ def main():
             decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask)
             test_scene_jsons = pack_scene_json(decoded_recon,room_name)
             for i, scene_json in enumerate(test_scene_jsons):
-                save_path = os.path.join(f'./visualizations/scene', f'{room_name[i]}_recon.json')
+                save_path = os.path.join(f'./visualizations/exp{args.exp}/scene', f'{room_name[i]}_recon.json')
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 with open(save_path, 'w') as f:
                     import json
                     json.dump(scene_json, f, indent=4)
                 # print(f'Saved reconstructed scene JSON to {save_path}')
             # 这里调用可视化函数，可以传入输入和输出
-            visualize_result(decoded_recon, raw_data=decoded_raw, room_name=room_name, save_dir=f'./visualizations/topdown')
+            visualize_result(decoded_recon, raw_data=decoded_raw, room_name=room_name, save_dir=f'./visualizations/exp{args.exp}/topdown')
 
             print(f"Processed batch {batch_idx+1}/{len(test_loader)}")
 

@@ -98,9 +98,10 @@ class RoomLayoutVQVAE(nn.Module):
         self.encoder = SceneLayoutTokenEncoder(token_dim, depth=enc_depth, heads=heads)
         self.quantizer = VectorQuantizer(num_embeddings, token_dim)
 
-        self.token_sequentializer = TokenSequentializer(embed_dim=token_dim, vocab_size=num_embeddings, resi_ratio=0.5, share_phi=1, use_prior_cluster=False)
+        self.token_sequentializer = TokenSequentializer(embed_dim=token_dim, vocab_size=num_embeddings, resi_ratio=0.5, share_phi=1, ema_decay=float(configs['model']['quant']['ema_decay']), use_prior_cluster=False)
         self.decoder = SceneLayoutTokenDecoder(token_dim, depth=dec_depth, heads=heads)
         self.configs = configs
+        self.token_dim = token_dim
 
 
     def forward(self, x, padding_mask=None):  # x: [B, N, D], mask: [B, N]
@@ -112,8 +113,8 @@ class RoomLayoutVQVAE(nn.Module):
         elif self.configs['model']['bottleneck'] == 'vqvae':
             z_q, vq_loss, indices = self.quantizer(z) # B, N+1, D   
         elif self.configs['model']['bottleneck'] == 'residual-vae':
-            z_q, vq_loss = self.token_sequentializer(z, padding_mask=padding_mask)
-            indices = None
+            z_q, vq_loss, vocab_hits = self.token_sequentializer(z, padding_mask=padding_mask)
+            indices = vocab_hits
         else:
             raise NotImplementedError(f"Unknown bottleneck type: {self.configs['model']['bottleneck']}")
 

@@ -10,10 +10,10 @@ class TokenSequentializer(nn.Module):
         Implemented with residual-structured blocks.
     '''
     def __init__(self,
-        embed_dim = 128, vocab_size = 512, beta = 0.25,
+        embed_dim = 128, vocab_size = 512, beta = 0.25, ema_decay = 0.99, eps = 1e-5,
         resi_ratio = 0.5,
         share_phi = 1,  # 0: non-shared, 1: shared, 2: partially-shared 
-        use_prior_cluster = False, using_znorm = False,
+        use_prior_cluster = False, using_znorm = False, training = True,
         t_scales = [1, 2, 4, 7, 11]   # + N (last scale is the full resolution)
     ):
         super().__init__()
@@ -39,9 +39,17 @@ class TokenSequentializer(nn.Module):
         self.register_buffer('ema_vocab_hit', torch.full((len(t_scales) + 1, vocab_size),fill_value=0.0))
         self.record_hit = 0
         self.embedding = nn.Embedding(vocab_size, embed_dim)
+        self.register_buffer('cluster_size', torch.zeros(vocab_size))
+        self.register_buffer('embedding_avg', torch.zeros(vocab_size, embed_dim))
+
+        self.embedding.weight.data.normal_()
         self.using_znorm = using_znorm
         self.beta = beta
 
+        self.ema_decay = ema_decay
+        self.eps = eps
+
+        self.training = training
 
         if self.use_prior_cluster:
             # TODO: prior cluster info inject there, explicitly
@@ -50,6 +58,7 @@ class TokenSequentializer(nn.Module):
             # pre-define perceptual length scales
             # model learn itself how to use different-scale token map to describe a scene
             self.t_scales = t_scales
+
 
     # ---------------------- training encoder-decoder only --------------------------#
     def forward(self, feature_map : torch.Tensor, padding_mask = None) -> torch.Tensor:
@@ -84,13 +93,30 @@ class TokenSequentializer(nn.Module):
             for stage_i in range(SN + 1):
                 token_len = self.t_scales[stage_i] if stage_i < SN else N
                 f_down = self.down_resampler(f_rest, M=token_len, padding_mask = mask_cat).reshape(-1,D) if stage_i < SN else f_rest.reshape(-1,D) # B x token_len x D
-                f_down = F.normalize(f_down, dim=-1)
-                idx_N = torch.argmax(f_down @ F.normalize(self.embedding.weight.T, dim=0), dim=1)  # n = B x token_len
+
+                # self.console_log_distribution(f_down)
+
+                dist = (
+                    f_down.pow(2).sum(dim=1, keepdim=True)
+                    - 2 * f_down @ self.embedding.weight.T
+                    + self.embedding.weight.pow(2).sum(dim=1)
+                )  # (B*L, V)
+
+                idx_N = torch.argmin(dist, dim=1)
+                # f_down = F.normalize(f_down, dim=-1)
+
+
+                # idx_N = torch.argmax(f_down @ F.normalize(self.embedding.weight.T, dim=0), dim=1)  # n = B x token_len
+
+                if self.training:
+                    self._ema_update(f_down, idx_N)
 
                 hit_V = idx_N.bincount(minlength=self.vocab_size).float()  # vocab_size ## not user yet
                 
                 idx_BL = idx_N.view(B, token_len)  # B x token_len
                 f_down_hat = self.embedding(idx_BL)  # B x token_len x D
+
+                # self.console_log_distribution(f_down_hat, after_cluster=True)
 
                 f_up = self.up_resampler(f_down_hat, M=N) if stage_i < SN else f_down_hat  # B x N x D
                 # f_down = F.interpolate(f_rest.transpose(1,2), size=token_len, mode = 'linear', align_corners=True).transpose(1,2)  # B x token_len x D
@@ -103,16 +129,65 @@ class TokenSequentializer(nn.Module):
                 f_hat = (f_hat + f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)
 
                 # VQ loss
-                mean_vq_loss += F.mse_loss(f_hat.data, feature_map).mul_(self.beta) + F.mse_loss(f_hat, f_no_grad)
+                
+                vocab_hit_V += hit_V
+                mean_vq_loss += F.mse_loss(f_hat.data, feature_map).mul_(self.beta)
             
             mean_vq_loss = mean_vq_loss / (SN + 1)
             f_hat = (f_hat.data-f_no_grad).add_(feature_map)  # straight-through trick
 
             
         
-            return f_hat, mean_vq_loss
+            return f_hat, mean_vq_loss, vocab_hit_V
             
     
+    def _ema_update(self, z_e, idx_N: torch.Tensor):
+        encodings = F.one_hot(idx_N, self.vocab_size).float() # n x V 
+        n_k = encodings.sum(0) # V 
+        m_k = encodings.T @ z_e # V x D
+
+        with torch.no_grad():
+            self.cluster_size.mul_(self.ema_decay).add_(n_k, alpha=1 - self.ema_decay)
+            self.embedding_avg.mul_(self.ema_decay).add_(m_k, alpha=1 - self.ema_decay)
+
+        n = self.cluster_size.sum()
+        cluster_size = ((self.cluster_size + self.eps) /
+                        (n + self.vocab_size * self.eps)) * n
+        self.embedding.weight.data.copy_(
+            self.embedding_avg / cluster_size.unsqueeze(1)
+        )
+
+
+        # with torch.no_grad():
+        #     self.embedding.weight.clamp_(-2.0, 2.0)
+        
+        
+        # unique, counts = idx_N.unique(return_counts=True)
+        # used_codes = unique.numel()
+        # usage_rate = used_codes / float(self.vocab_size)
+        # min_count = int(counts.min().item()) if counts.numel()>0 else 0
+        # max_count = int(counts.max().item()) if counts.numel()>0 else 0
+
+        # # EMA maintained cluster_size
+        # cluster_nonzero = (self.cluster_size > 1e-6).sum().item()
+        # avg_cluster = float(self.cluster_size.mean().item())
+
+        # print(f"[VQ] used {used_codes}/{self.vocab_size} ({usage_rate:.2%}),"
+        #     f" per-batch min/max {min_count}/{max_count},"
+        #     f" cluster_nonzero={cluster_nonzero}, avg_cluster={avg_cluster:.6f}")
+        
+
+        
+    def console_log_distribution(self, z_e, after_cluster = False):
+        z_e_mean = z_e.mean().item()
+        z_e_std = z_e.std().item()
+        z_e_norm = z_e.norm(dim=-1).mean().item()
+        if after_cluster:
+            print("After quant: z_e mean/std/norm:", z_e_mean, z_e_std, z_e_norm)
+            print()
+            return
+        print("Before quant: z_e mean/std/norm:", z_e_mean, z_e_std, z_e_norm)
+
 
 
     # ---------------------- training sar only --------------------------#
