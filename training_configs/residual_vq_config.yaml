@@ -1,8 +1,8 @@
 model:
   type: ResidualVQAutoEncoder
   token_dim: 64
-  encoder_depth: 6
-  decoder_depth: 6
+  encoder_depth: 10
+  decoder_depth: 10
   num_heads: 8
   num_embeddings: 4096
   bottleneck : residual-vae
@@ -13,11 +13,11 @@ model:
 
 
 super_parameters:
-  epochs: 1000
+  epochs: 2000
   batch_size: 512
   learning_rate: 0.0001
   weight_decay: 0.00001
   cuda: 0
 
-train:
-  save_folder: ./pretrained/roomautoencoders/
+save:
+  save_folder: ./pretrained/roomautoencoders/ResidualVQAutoEncoder_64_16_16_4096

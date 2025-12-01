@@ -4,5 +4,6 @@ __pycache__
 datasets/models
 visualizations
 *.npy
-datasets/processed_old
+datasets/processed_wo_lat
 wandb/
+pretrained/

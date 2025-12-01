@@ -14,7 +14,7 @@ class TokenSequentializer(nn.Module):
         resi_ratio = 0.5,
         share_phi = 1,  # 0: non-shared, 1: shared, 2: partially-shared 
         use_prior_cluster = False, using_znorm = False, training = True,
-        t_scales = [1, 2, 4, 7, 11]   # + N (last scale is the full resolution)
+        t_scales = [1, 2, 3, 4, 5, 7, 11, 15]   # + N (last scale is the full resolution)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -156,26 +156,6 @@ class TokenSequentializer(nn.Module):
         self.embedding.weight.data.copy_(
             self.embedding_avg / cluster_size.unsqueeze(1)
         )
-
-
-        # with torch.no_grad():
-        #     self.embedding.weight.clamp_(-2.0, 2.0)
-        
-        
-        # unique, counts = idx_N.unique(return_counts=True)
-        # used_codes = unique.numel()
-        # usage_rate = used_codes / float(self.vocab_size)
-        # min_count = int(counts.min().item()) if counts.numel()>0 else 0
-        # max_count = int(counts.max().item()) if counts.numel()>0 else 0
-
-        # # EMA maintained cluster_size
-        # cluster_nonzero = (self.cluster_size > 1e-6).sum().item()
-        # avg_cluster = float(self.cluster_size.mean().item())
-
-        # print(f"[VQ] used {used_codes}/{self.vocab_size} ({usage_rate:.2%}),"
-        #     f" per-batch min/max {min_count}/{max_count},"
-        #     f" cluster_nonzero={cluster_nonzero}, avg_cluster={avg_cluster:.6f}")
-        
 
         
     def console_log_distribution(self, z_e, after_cluster = False):

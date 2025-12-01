@@ -168,11 +168,12 @@ if __name__ == '__main__':
 
     save_config = config.get('save', {})
     save_folder = save_config.get('save_folder',"./pretrained/roomautoencoders/")
+    os.makedirs(save_folder,exist_ok=True)
     save_path = os.path.join(save_folder, f"{model_config['type']}.pth")
 
-    wandb.init(project="RoomLayoutVQVAE_Training")
+    wandb.init(project="RoomLayout")
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else 'cpu')
 
     train_dataset = ThreeDFrontDataset(npz_dir='./datasets/processed',split='train')
     val_dataset = ThreeDFrontDataset(npz_dir='./datasets/processed',split='test')

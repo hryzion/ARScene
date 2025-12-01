@@ -122,6 +122,23 @@ class RoomLayoutVQVAE(nn.Module):
         root = x[:, :1, :]    # B, 1, D
         recon = x[:, 1:, :]   # B, N, D
         return root, recon, vq_loss, indices
+    
+    def compare_quantize_loss(self, x, padding_mask=None):
+        z = self.encoder(x, padding_mask=padding_mask) # B, N+1, D
+        if self.configs['model']['bottleneck'] == 'ae':
+            z_q = z
+            vq_loss = torch.tensor(0.0, device=z.device)
+            indices = None
+        elif self.configs['model']['bottleneck'] == 'vqvae':
+            z_q, vq_loss, indices = self.quantizer(z) # B, N+1, D   
+        elif self.configs['model']['bottleneck'] == 'residual-vae':
+            z_q, vq_loss, vocab_hits = self.token_sequentializer(z, padding_mask=padding_mask)
+            indices = vocab_hits
+        else:
+            raise NotImplementedError(f"Unknown bottleneck type: {self.configs['model']['bottleneck']}")
+        recon_from_q = self.decoder(z_q, padding_mask=padding_mask) 
+        recon_from_z = self.decoder(z, padding_mask= padding_mask)
+
 
 def compute_loss(model, x, padding_mask):
     """
