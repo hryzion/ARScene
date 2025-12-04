@@ -130,3 +130,74 @@ class CrossCompressor(nn.Module):
         # cross-attention: query=q_tokens, key/value=x
         compressed = self.attn(q_tokens, x, x, key_padding_mask=key_padding_mask, attn_mask=attn_mask)
         return compressed  # (B, num_query_tokens, C)
+
+
+class FFN(nn.Module):
+    """
+    Transformer-style FFN with optional dimension expansion,
+    gating (GLU), residual, dropout and layer norm.
+    """
+
+    def __init__(
+        self,
+        dim_in,         # 输入维度
+        dim_hidden,     # 中间维度（可用于升维）
+        dim_out=None,   # 输出维度（默认和 dim_in 一样）
+        activation="gelu",
+        dropout=0.0,
+        residual=True,
+        layernorm=False,
+        gated=False,
+    ):
+        super().__init__()
+
+        dim_out = dim_out or dim_in
+        self.residual = residual and (dim_in == dim_out)
+        self.layernorm = nn.LayerNorm(dim_in) if layernorm else None
+        self.gated = gated
+
+        # 激活函数
+        if activation == "gelu":
+            self.act = nn.GELU()
+        elif activation == "relu":
+            self.act = nn.ReLU()
+        elif activation == "silu":
+            self.act = nn.SiLU()
+        else:
+            raise ValueError(f"Unknown activation {activation}")
+
+        # 是否使用 gating（GLU）
+        if gated:
+            # GLU: hidden -> (hidden * 2)
+            self.fc1 = nn.Linear(dim_in, dim_hidden * 2)
+        else:
+            self.fc1 = nn.Linear(dim_in, dim_hidden)
+
+        self.fc2 = nn.Linear(dim_hidden, dim_out)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        """
+        x: [B, N, dim_in]
+        """
+        residual = x
+
+        if self.layernorm is not None:
+            x = self.layernorm(x)
+
+        x = self.fc1(x)
+
+        if self.gated:
+            # GLU: (A * sigmoid(B))
+            a, b = x.chunk(2, dim=-1)
+            x = a * torch.sigmoid(b)
+        else:
+            x = self.act(x)
+
+        x = self.dropout(x)
+        x = self.fc2(x)
+
+        if self.residual:
+            x = x + residual  # 残差
+
+        return x

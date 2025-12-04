@@ -367,7 +367,7 @@ def decode_obj_token(obj_token, use_objlat = True):
 
     coarse_semantic = THREED_FRONT_CATEGORY[np.argmax(cs)]
     q_size =  abs(bbox_max - bbox_min)
-    model_id = get_modelid_by_latent_and_size(latent, q_size, coarse_semantic) if use_objlat else get_modelid_by_size(q_size, coarse_semantic)
+    model_id = get_modelid_by_latent_and_size(latent, q_size, coarse_semantic) if use_objlat else get_modelid_by_size(q_size, coar)
 
     return {
         'coarseSemantic': coarse_semantic,
