@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class ObjTokenReconstructionLoss(nn.Module):
-    def __init__(self, num_categories = 31, weights=None):
+    def __init__(self, num_categories = 31, weights=None, configs = None):
         super().__init__()
         self.num_categories = num_categories
         self.weights = weights or {
@@ -15,6 +15,8 @@ class ObjTokenReconstructionLoss(nn.Module):
             'scale': 1.0,
             'latent':1.0
         }
+
+        self.use_objlat = configs['use_objlat']
         self.mse_loss = nn.MSELoss(reduction='none')  # 用 none 自己处理 mask
 
 
@@ -54,14 +56,19 @@ class ObjTokenReconstructionLoss(nn.Module):
         scale_pred = pred[:, :, start:start+3]
         scale_target = target[:, :, start:start+3]
 
-        start += 3
-        latent_pred = pred[:, :, start:start + 64]
-        latent_target = target[:, :, start:start + 64]
+        if self.use_objlat:
+            start += 3
+            latent_pred = pred[:, :, start:start + 64]
+            latent_target = target[:, :, start:start + 64]
 
-        start += 64
-        rotation_pred = pred[:, :, start:start+6]
-        rotation_target = target[:, :, start:start+6]
-
+            start += 64
+            rotation_pred = pred[:, :, start:start+6]
+            rotation_target = target[:, :, start:start+6]
+        
+        else:
+            start += 3
+            rotation_pred = pred[:, :, start:start+6]
+            rotation_target = target[:, :, start:start+6]
         
 
         # === 计算各部分损失（带 mask）===
@@ -85,7 +92,7 @@ class ObjTokenReconstructionLoss(nn.Module):
         loss_translate = (self.mse_loss(translate_pred, translate_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
         loss_scale = (self.mse_loss(scale_pred, scale_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
         loss_rotation = (self.mse_loss(rotation_pred, rotation_target).mean(dim = -1) *mask ).sum() / (valid_tokens + 1e-8)
-        loss_latent = (self.mse_loss(latent_pred, latent_target).mean(dim = -1) *mask ).sum() / (valid_tokens + 1e-8)
+        loss_latent = (self.mse_loss(latent_pred, latent_target).mean(dim = -1) *mask ).sum() / (valid_tokens + 1e-8) if self.use_objlat else 0
       
 
         # === 加权求和 ===
@@ -107,5 +114,5 @@ class ObjTokenReconstructionLoss(nn.Module):
             'translate': loss_translate.item(),
             'rotation': loss_rotation.item(),
             'scale': loss_scale.item(),
-            'latent': loss_latent.item()
+            'latent': loss_latent.item() if self.use_objlat else 0
         }

@@ -355,7 +355,7 @@ def embed_obj_token(obj):
         cs, bbox_max, bbox_min, translate, rotation, scale,latent
     ))
 
-def decode_obj_token(obj_token):
+def decode_obj_token(obj_token, use_objlat = True):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
     cs = obj_token[:len(THREED_FRONT_CATEGORY)]
     bbox_max = obj_token[len(THREED_FRONT_CATEGORY):len(THREED_FRONT_CATEGORY) + 3]
@@ -367,7 +367,7 @@ def decode_obj_token(obj_token):
 
     coarse_semantic = THREED_FRONT_CATEGORY[np.argmax(cs)]
     q_size =  abs(bbox_max - bbox_min)
-    model_id = get_modelid_by_latent_and_size(latent, q_size, coarse_semantic)
+    model_id = get_modelid_by_latent_and_size(latent, q_size, coarse_semantic) if use_objlat else get_modelid_by_size(q_size, coarse_semantic)
 
     return {
         'coarseSemantic': coarse_semantic,
@@ -382,6 +382,24 @@ def decode_obj_token(obj_token):
         'modelId': model_id,
         'inDatabase': model_id is not None
     }
+
+
+def get_modelid_by_size(q_size, category):
+    global MODEL_LATENTS
+    if category not in MODEL_LATENTS:
+        return None
+    model_ids = []
+    mses_size = []
+
+    for model_id, model_latent_and_size in MODEL_LATENTS[category].items():
+        model_size = np.array(model_latent_and_size['size'])
+
+        model_ids.append(model_id)
+        mses_size.append(np.sum((q_size - model_size)**2))
+
+    ind = np.sort(mses_size)
+    return model_ids[ind[0]]
+
 
 
 def get_modelid_by_latent_and_size(q_latent, q_size, category):
@@ -405,7 +423,7 @@ def get_modelid_by_latent_and_size(q_latent, q_size, category):
 
     return model_ids[ind[0]]
 
-def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask):
+def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask, use_objlat=True):
     """
     batch_obj_tokens: [B, N, token_dim], torch.Tensor 或 numpy array
     attention_mask: [B, N], bool tensor，True 表示有效token
@@ -420,7 +438,7 @@ def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask):
         decoded_b = []
         for n in range(N):
             if not attention_mask[b, n]:
-                decoded_b.append(decode_obj_token(batch_obj_tokens[b, n]))
+                decoded_b.append(decode_obj_token(batch_obj_tokens[b, n], use_objlat))
             else:
                 # mask为False的token忽略或填None，视需要而定
                 pass

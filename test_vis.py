@@ -9,8 +9,8 @@ from utils import decode_obj_tokens_with_mask, visualize_result, pack_scene_json
 import os
 
 
-def load_test_dataset():
-    return ThreeDFrontDataset(npz_dir='./datasets/processed',split='test')
+def load_test_dataset(dataset_dir):
+    return ThreeDFrontDataset(npz_dir=f'{dataset_dir}',split='test')
 
 def main():
     import yaml
@@ -30,6 +30,7 @@ def main():
     ENCODER_DEPTH = int(model_config.get('encoder_depth', 4))
     DECODER_DEPTH = int(model_config.get('decoder_depth', 4))
     HEADS = int(model_config.get('num_heads', 4))
+    TOKEN_DIM  = int(model_config.get('token_dim', 64))
     NUM_EMBEDDINGS =  int(model_config.get('num_embeddings', 512))
 
     save_config = config.get('save', {})
@@ -39,24 +40,27 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-
+    dataset_config = config.get('dataset', {})
+    dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
+    if not dataset_config.get('use_objlat'):
+        dataset_dir += '_wo_lat'
     # 1. 初始化模型并加载权重
-    model = RoomLayoutVQVAE(token_dim=64, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, configs=config).to(device)
+    model = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, configs=config).to(device)
 
     model.load_state_dict(torch.load(f'{save_path}', map_location=device))
     model.to(device)
     model.eval()
 
-    
-    normalizer = SceneTokenNormalizer(category_dim=31, rotation_mode='sincos')
-    if os.path.exists('./datasets/processed/normalizer_stats.json'):
-        normalizer.load('./datasets/processed/normalizer_stats.json')
+    obj_feat = 64 if dataset_config['use_objlat'] else 0
+    normalizer = SceneTokenNormalizer(category_dim=31,obj_feat=obj_feat, rotation_mode='sincos')
+    if os.path.exists(f'{dataset_dir}/normalizer_stats.json'):
+        normalizer.load(f'{dataset_dir}/normalizer_stats.json')
     else:
         raise FileNotFoundError("Normalizer stats file not found. Please preprocess the dataset first.")
 
 
     # 2. 准备测试集和 DataLoader
-    test_dataset = load_test_dataset()
+    test_dataset = load_test_dataset(dataset_dir)
     test_dataset.transform = normalizer.transform
     test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
@@ -71,18 +75,18 @@ def main():
             root, recon, vq_loss, _ = model(obj_tokens, padding_mask=attention_mask)
             denormalized_recon = normalizer.inverse_transform(recon)
             denormalized_obj_tokens = normalizer.inverse_transform(obj_tokens)
-            decoded_recon = decode_obj_tokens_with_mask(denormalized_recon, attention_mask)
-            decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask)
+            decoded_recon = decode_obj_tokens_with_mask(denormalized_recon, attention_mask, use_objlat=dataset_config['use_objlat'])
+            decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'])
             test_scene_jsons = pack_scene_json(decoded_recon,room_name)
             for i, scene_json in enumerate(test_scene_jsons):
-                save_path = os.path.join(f'./visualizations/scene', f'{room_name[i]}_recon.json')
+                save_path = os.path.join(f'./visualizations/exp{args.exp}/scene', f'{room_name[i]}_recon.json')
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 with open(save_path, 'w') as f:
                     import json
                     json.dump(scene_json, f, indent=4)
                 # print(f'Saved reconstructed scene JSON to {save_path}')
             # 这里调用可视化函数，可以传入输入和输出
-            visualize_result(decoded_recon, raw_data=decoded_raw, room_name=room_name, save_dir=f'./visualizations/topdown')
+            visualize_result(decoded_recon, raw_data=decoded_raw, room_name=room_name, save_dir=f'./visualizations/exp{args.exp}/topdown')
 
             print(f"Processed batch {batch_idx+1}/{len(test_loader)}")
 

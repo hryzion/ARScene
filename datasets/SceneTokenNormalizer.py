@@ -29,6 +29,12 @@ class SceneTokenNormalizer:
             'rotation': slice(self.category_dim + 9, self.category_dim + 12),
             'scale': slice(self.category_dim + 12, self.category_dim+15),
             'latent': slice(self.category_dim + 15, self.origin_dim)
+        } if 'latent' in self.stats.keys() else {
+            'bbox_max': slice(self.category_dim, self.category_dim + 3),
+            'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
+            'translate': slice(self.category_dim + 6, self.category_dim + 9),
+            'rotation': slice(self.category_dim + 9, self.category_dim + 12),
+            'scale': slice(self.category_dim + 12, self.category_dim+15),
         }
 
         for batch in loader:
@@ -71,8 +77,14 @@ class SceneTokenNormalizer:
             'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
             'translate': slice(self.category_dim + 6, self.category_dim + 9),
             'rotation': slice(self.category_dim + 9, self.category_dim + 12),
-            'scale': slice(self.category_dim + 12, self.category_dim + 15),
+            'scale': slice(self.category_dim + 12, self.category_dim+15),
             'latent': slice(self.category_dim + 15, self.origin_dim)
+        } if 'latent' in self.stats.keys() else {
+            'bbox_max': slice(self.category_dim, self.category_dim + 3),
+            'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
+            'translate': slice(self.category_dim + 6, self.category_dim + 9),
+            'rotation': slice(self.category_dim + 9, self.category_dim + 12),
+            'scale': slice(self.category_dim + 12, self.category_dim+15),
         }
 
         normalized = obj_tokens.clone()
@@ -109,6 +121,12 @@ class SceneTokenNormalizer:
             'rotation': slice(self.category_dim + 9, self.category_dim + 12),
             'scale': slice(self.category_dim + 12, self.category_dim + 15),
             'latent': slice(self.category_dim + 15, self.origin_dim)
+        } if 'latent' in self.stats.keys() else {
+            'bbox_max': slice(self.category_dim, self.category_dim + 3),
+            'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
+            'translate': slice(self.category_dim + 6, self.category_dim + 9),
+            'rotation': slice(self.category_dim + 9, self.category_dim + 12),
+            'scale': slice(self.category_dim + 12, self.category_dim+15),
         }
 
         denorm = obj_tokens.clone()

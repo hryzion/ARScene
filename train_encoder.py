@@ -133,10 +133,18 @@ if __name__ == '__main__':
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
 
+
+    # --------------------- super_parameters -----------------------
+
+
     super_parameters = config['super_parameters']
-    BATCH_SIZE = int(super_parameters.get('batch_size', 16))
+    BATCH_SIZE = int(super_parameters.get('batch_size', 64))
     NUM_EPOCHS = int(super_parameters.get('epochs', 200))
     LEARNING_RATE = float(super_parameters.get('learning_rate', 1e-4))
+
+
+    
+    # --------------------- model -----------------------
 
     model_config = config['model']
 
@@ -144,25 +152,39 @@ if __name__ == '__main__':
     DECODER_DEPTH = int(model_config.get('decoder_depth', 4))
     HEADS = int(model_config.get('num_heads', 4))
     NUM_EMBEDDINGS =  int(model_config.get('num_embeddings', 512))
+    TOKEN_DIM  = int(model_config.get('token_dim', 64))
+
+    # --------------------- save -----------------------
 
     save_config = config.get('save', {})
     save_folder = save_config.get('save_folder',"./pretrained/roomautoencoders/")
+    os.makedirs(save_folder,exist_ok=True)
+
+    with open(os.path.join(save_folder, 'config.yaml'), "w", encoding="utf-8") as f:
+        yaml.dump(config, f, allow_unicode=True)
+
     save_path = os.path.join(save_folder, f"{model_config['type']}.pth")
-
-    wandb.init(project="RoomLayoutVQVAE_Training")
+    os.makedirs(save_folder, exist_ok=True)
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else 'cpu')
 
-    train_dataset = ThreeDFrontDataset(npz_dir='./datasets/processed',split='train')
-    val_dataset = ThreeDFrontDataset(npz_dir='./datasets/processed',split='test')
+
+    # --------------------- dataset -----------------------
+    dataset_config = config.get('dataset', {})
+    dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
+    if not dataset_config.get('use_objlat'):
+        dataset_dir += '_wo_lat'
+
+    train_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='train')
+    val_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='test')
 
     # Normalizer
     normalizer = SceneTokenNormalizer(category_dim=31, rotation_mode='sincos')
-    if os.path.exists('./datasets/processed/normalizer_stats.json'):
-        normalizer.load('./datasets/processed/normalizer_stats.json')
+    if os.path.exists(f'{dataset_dir}/normalizer_stats.json'):
+        normalizer.load(f'{dataset_dir}/normalizer_stats.json')
     else:
         normalizer.fit(train_dataset, mask_key='attention_mask', batch_size=BATCH_SIZE)
-        normalizer.save('./datasets/processed/normalizer_stats.json')
+        normalizer.save(f'{dataset_dir}/normalizer_stats.json')
 
     train_dataset.transform = normalizer.transform
     val_dataset.transform = normalizer.transform
@@ -171,7 +193,8 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
-    model = RoomLayoutVQVAE(token_dim=64, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS,configs=config).to(device)
-    criterion = ObjTokenReconstructionLoss()
+    model = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS,configs=config).to(device)
+    criterion = ObjTokenReconstructionLoss(configs=dataset_config)
     
+    wandb.init(project="RoomLayout")
     train_model(model, train_loader, val_loader, device,num_epochs=NUM_EPOCHS, criterion=criterion, save_path=save_path,configs=config)

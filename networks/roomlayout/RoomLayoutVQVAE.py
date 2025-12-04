@@ -95,11 +95,15 @@ class RoomLayoutVQVAE(nn.Module):
         super().__init__()
 
         # VQVAE encoder and decoder
-        self.encoder = SceneLayoutTokenEncoder(token_dim, depth=enc_depth, heads=heads)
+
+        attr_dim = int(configs['dataset']['attr_dim'])
+
+
+        self.encoder = SceneLayoutTokenEncoder(token_dim, depth=enc_depth, heads=heads,attr_dim=attr_dim)
         self.quantizer = VectorQuantizer(num_embeddings, token_dim)
 
         self.token_sequentializer = TokenSequentializer(embed_dim=token_dim, resi_ratio=0.5, share_phi=1, use_prior_cluster=False)
-        self.decoder = SceneLayoutTokenDecoder(token_dim, depth=dec_depth, heads=heads)
+        self.decoder = SceneLayoutTokenDecoder(token_dim, depth=dec_depth, heads=heads,attr_dim=attr_dim)
         self.configs = configs
 
 

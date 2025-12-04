@@ -3,6 +3,8 @@ import argparse
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='./training_configs/residual_config.yaml', help='Path to the config file')
+    parser.add_argument('--exp', type=int, default=0)
+    parser.add_argument('--cuda' ,type=int, default=0)
     args = parser.parse_args()
     return args
 

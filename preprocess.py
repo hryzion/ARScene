@@ -1,7 +1,7 @@
 import json
 import tqdm
 import os
-from config import DATA_DIR,OBJ_DIR
+from config import DATA_DIR, OBJ_DIR
 from utils import load_scene_json, divide_scene_json_to_rooms, get_room_attributes, CRASHED_ROOM
 import random
 import numpy as np
