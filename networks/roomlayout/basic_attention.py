@@ -4,7 +4,8 @@ import torch.nn.functional as F
 import math
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, dim, heads=8):
+    def __init__(self, dim, heads=8, attn_drop = 0., proj_drop = 0.):
+        # assume that qkv has the same dim, if not, do projection before
         super().__init__()
         self.dim = dim
         self.heads = heads
@@ -17,6 +18,10 @@ class MultiHeadAttention(nn.Module):
 
         # 输出投影
         self.out_proj = nn.Linear(dim, dim)
+
+        self.attn_drop = attn_drop
+        self.proj_drop = nn.Dropout(proj_drop, inplace=True) if proj_drop > 0 else nn.Identity()
+        
 
     def forward(self, query, key, value,
                 key_padding_mask=None,
@@ -56,12 +61,13 @@ class MultiHeadAttention(nn.Module):
             scores = scores.masked_fill(mask, float('-inf'))
 
         # softmax
-        attn = F.softmax(scores, dim=-1)
+        dropout_p = self.attn_drop if self.training else 0.
+        attn = F.dropout(F.softmax(scores, dim=-1), p=dropout_p) if dropout_p > 0 else F.softmax(scores, dim=-1)
         out = attn @ V  # (B,H,Lq,dk)
 
         # merge heads
         out = out.transpose(1,2).reshape(B, Lq, C)
-        return self.out_proj(out)
+        return self.proj_drop(self.out_proj(out))
 
 class SelfAttention(MultiHeadAttention):
     def forward(self, x, key_padding_mask=None, attn_mask=None):
@@ -71,6 +77,86 @@ class CrossAttention(MultiHeadAttention):
     def forward(self, q_tokens, kv_tokens, key_padding_mask=None, attn_mask=None):
         # cross attention 不需要 causal mask，默认 attn_mask 可选
         return super().forward(q_tokens, kv_tokens, kv_tokens, key_padding_mask, attn_mask)
+
+
+def drop_path(x, drop_prob: float = 0., training: bool = False, scale_by_keep: bool = True):    # taken from timm
+    if drop_prob == 0. or not training: return x
+    keep_prob = 1 - drop_prob
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)  # work with diff dim tensors, not just 2D ConvNets
+    random_tensor = x.new_empty(shape).bernoulli_(keep_prob)
+    if keep_prob > 0.0 and scale_by_keep:
+        random_tensor.div_(keep_prob)
+    return x * random_tensor
+
+
+class DropPath(nn.Module):  # taken from timm
+    def __init__(self, drop_prob: float = 0., scale_by_keep: bool = True):
+        super(DropPath, self).__init__()
+        self.drop_prob = drop_prob
+        self.scale_by_keep = scale_by_keep
+    
+    def forward(self, x):
+        return drop_path(x, self.drop_prob, self.training, self.scale_by_keep)
+    
+    def extra_repr(self):
+        return f'(drop_prob=...)'
+
+
+class AdaptLayerNormSelfAttention(nn.Module):
+    def __init__(
+        self, block_idx, last_drop_p, embed_dim, cond_dim, shared_aln: bool, norm_layer,
+        heads, mlp_ratio=4., drop=0., attn_drop=0., drop_path=0., attn_l2_norm=False
+    ):
+        super(AdaptLayerNormSelfAttention, self).__init__()
+        self.block_idx, self.last_drop_p, self.embed_dim = block_idx, last_drop_p, embed_dim
+        self.cond_dim = cond_dim
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.self_attn = SelfAttention(dim = embed_dim, heads=heads, attn_drop=attn_drop, proj_drop=drop)
+        self.ffn = FFN(dim_in=embed_dim, dim_hidden= round(embed_dim, mlp_ratio), dropout=drop)
+        self.ln_wo_grad = norm_layer(embed_dim, elementwise_affine=False)
+        self.shared_aln = shared_aln
+        if self.shared_aln:
+            self.ada_gss = nn.Parameter(torch.randn(1, 1, 6, embed_dim) / embed_dim**0.5)
+        else:
+            lin = nn.Linear(cond_dim, 6*embed_dim)
+            self.ada_lin = nn.Sequential(nn.SiLU(inplace=False), lin)
+    def forward(self, x, cond, causal_attn = None, key_padding_mask = None):
+        if self.shared_aln:
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond).unbind(2) # 116C + B16C =unbind(2)=> 6 B1C
+        else:
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond).view(-1, 1, 6, self.C).unbind(2)
+        
+        x = x + self.drop_path(self.self_attn( self.ln_wo_grad(x).mul(scale1.add(1)).add_(shift1), attn_mask=causal_attn, key_padding_mask=key_padding_mask ).mul_(gamma1))
+        x = x + self.drop_path(self.ffn( self.ln_wo_grad(x).mul(scale2.add(1)).add_(shift2) ).mul(gamma2)) # this mul(gamma2) cannot be in-placed when FusedMLP is used
+        return x
+    
+class AdaptLayerNormCrossAttention(nn.Module):
+    def __init__(
+        self, block_idx, last_drop_p, embed_dim, cond_dim, shared_aln: bool, norm_layer,
+        heads, mlp_ratio=4., drop=0., attn_drop=0., drop_path=0., attn_l2_norm=False
+    ):
+        super(AdaptLayerNormSelfAttention, self).__init__()
+        self.block_idx, self.last_drop_p, self.embed_dim = block_idx, last_drop_p, embed_dim
+        self.cond_dim = cond_dim
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.self_attn = CrossAttention(dim = embed_dim, heads=heads, attn_drop=attn_drop, proj_drop=drop)
+        self.ffn = FFN(dim_in=embed_dim, dim_hidden= round(embed_dim, mlp_ratio), dropout=drop)
+        self.ln_wo_grad = norm_layer(embed_dim, elementwise_affine=False)
+        self.shared_aln = shared_aln
+        if self.shared_aln:
+            self.ada_gss = nn.Parameter(torch.randn(1, 1, 6, embed_dim) / embed_dim**0.5)
+        else:
+            lin = nn.Linear(cond_dim, 6*embed_dim)
+            self.ada_lin = nn.Sequential(nn.SiLU(inplace=False), lin)
+    def forward(self, x, cond, cond_cross, causal_attn = None, key_padding_mask = None):
+        if self.shared_aln:
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond).unbind(2) # 116C + B16C =unbind(2)=> 6 B1C
+        else:
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond).view(-1, 1, 6, self.C).unbind(2)
+        
+        x = x + self.drop_path(self.self_attn( self.ln_wo_grad(x).mul(scale1.add(1)).add_(shift1), cond_cross, attn_mask=causal_attn, key_padding_mask=key_padding_mask ).mul_(gamma1))
+        x = x + self.drop_path(self.ffn( self.ln_wo_grad(x).mul(scale2.add(1)).add_(shift2) ).mul(gamma2)) # this mul(gamma2) cannot be in-placed when FusedMLP is used
+        return x
     
 class SelfCompressor(nn.Module):
     def __init__(self, dim, num_query_tokens, heads=8):
@@ -82,7 +168,7 @@ class SelfCompressor(nn.Module):
         super().__init__()
         self.num_query_tokens = num_query_tokens
         self.query_tokens = nn.Parameter(torch.randn(1, num_query_tokens, dim))
-        self.attn = SelfAttention(dim, heads=heads)
+        self.attn = SelfAttention(dim, heads=heads) 
 
     def forward(self, x, key_padding_mask=None, attn_mask=None):
         """
