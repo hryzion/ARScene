@@ -6,7 +6,7 @@ from torch.nn.utils.rnn import pad_sequence
 import torchvision.transforms as transforms
 from PIL import Image
 class ThreeDFrontDataset(Dataset):
-    def __init__(self, npz_dir, transform=None, split='train'):
+    def __init__(self, npz_dir, transform=None, split='train', padded_length=None):
         """
         :param npz_dir: 包含 .npz 文件的目录
         :param transform: 可选的 transform 用于后处理
@@ -15,6 +15,8 @@ class ThreeDFrontDataset(Dataset):
         self.file_list = [f for f in os.listdir(self.npz_dir)]
         
         self.transform = transform
+        if padded_length is not None:
+            self.padded_length = padded_length # uniform length for obj tokens
 
     def __len__(self):
         return len(self.file_list)
@@ -41,6 +43,18 @@ class ThreeDFrontDataset(Dataset):
         ])
         room_shape = transform(room_shape)
         obj_tokens = torch.from_numpy(obj_tokens)
+        if self.transform:
+            obj_tokens = self.transform(obj_tokens)
+
+        if self.padded_length is not None:
+            if obj_tokens.shape[0] > self.padded_length:
+                raise ValueError(f"Object tokens length {obj_tokens.shape[0]} exceeds padded_length {self.padded_length}")
+            padding_size = self.padded_length - obj_tokens.shape[0]
+            if padding_size > 0:
+                padding = torch.zeros((padding_size, obj_tokens.shape[1]), dtype=obj_tokens.dtype)
+                obj_tokens = torch.cat([obj_tokens, padding], dim=0)
+        
+
         # print(obj_tokens.shape)
         name = self.file_list[idx].split('_')[:2]
         name = '_'.join(name)
@@ -48,11 +62,11 @@ class ThreeDFrontDataset(Dataset):
             'room_name': name,
             'room_type': room_type,
             'room_shape': room_shape,
-            'obj_tokens': obj_tokens
+            'obj_tokens': obj_tokens,
+            'text_desc': str(data['desc'])
         }
 
-        if self.transform:
-            sample['obj_tokens'] = self.transform(sample['obj_tokens'])
+
 
         return sample
     
@@ -66,6 +80,7 @@ class ThreeDFrontDataset(Dataset):
         """
         # 分离每个字段
         room_types = [sample['room_type'] for sample in samples]   # [B]
+        room_descs = [sample['text_desc'] for sample in samples]   # [B]
         room_shapes = torch.stack([sample['room_shape'] for sample in samples])  # [B, D] 或 [B, N, D]
 
         obj_tokens_list = [sample['obj_tokens'] for sample in samples]  # 每个 shape: [num_objects, T]
@@ -81,7 +96,8 @@ class ThreeDFrontDataset(Dataset):
             'room_type': room_types,                  # [B]
             'room_shape': room_shapes,                # [B, D] or [B, N, D]
             'obj_tokens': padded_obj_tokens,           # [B, max_num_objects, T]
-            'attention_mask': attention_mask_batch    # [B, max_num_objects]
+            'attention_mask': attention_mask_batch,   # [B, max_num_objects]
+            'text_desc': room_descs          # [B]  
         }
 
 

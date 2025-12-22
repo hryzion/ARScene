@@ -14,6 +14,8 @@ from scipy.sparse.csgraph import connected_components
 from sklearn.metrics import silhouette_score
 import os
 from config import OBJ_DIR
+from num2words import num2words
+
 
 MODEL_LATENTS = json.load(open('./datasets/model_meta_wi_lat.json'))
 
@@ -108,16 +110,17 @@ def denormalize_tokens(obj_tokens, stats):
 
 
 
-def get_room_attributes(room):
+def get_room_attributes(room,use_objlat=True):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
     centralize_room(room)
     room_info = {
         'room_type' : room['roomTypes'][0], # one-hot ['livingRoom', "bedroom", 'diningRoom']
-        'room_shape' : render_room_shape_image_centered(room) 
+        'room_shape' : render_room_shape_image_centered(room),
+        'description' : get_room_description(room)
     }
     obj_tokens = []
     for obj in room['objList']:
-        obj_token = embed_obj_token(obj)
+        obj_token = embed_obj_token(obj,use_objlat=use_objlat)
         if obj_token is not None:
             obj_tokens.append(obj_token)
     obj_tokens = np.array(obj_tokens, dtype=np.float32)
@@ -216,10 +219,32 @@ def get_cat_prority(category):
     else:
         return 3
 
-
+def check(name, x):
+    print(name,
+          torch.isnan(x).any().item(),
+          torch.isinf(x).any().item(),
+          x.abs().max().item())
 
 from collections import Counter, defaultdict
 import random
+
+import nltk
+from nltk.corpus import cmudict
+
+"""
+Taken from https://stackoverflow.com/questions/20336524/verify-correct-use-of-a-and-an-in-english-texts-python
+"""
+
+
+def starts_with_vowel_sound(word, pronunciations=cmudict.dict()):
+    for syllables in pronunciations.get(word, []):
+        return syllables[0][-1].isdigit()
+
+
+def get_article(word):
+    word = word.split(" ")[0]
+    article = "an" if starts_with_vowel_sound(word) else "a"
+    return article
 
 def get_room_description(centred_room):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
@@ -326,7 +351,7 @@ def get_room_description(centred_room):
     
 
 
-def embed_obj_token(obj):
+def embed_obj_token(obj, use_objlat=True):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
     if 'coarseSemantic' not in obj or obj["coarseSemantic"] == 'Window' or obj['coarseSemantic'] == 'Door':
         return None
@@ -335,11 +360,14 @@ def embed_obj_token(obj):
     if obj['modelId'] == '7465':
         return None
     
-    model_id = obj['modelId']
-    model_info = np.load(os.path.join(OBJ_DIR,f"{model_id}", f"{model_id}_norm_pc_latent.npz"))
-    latent = np.array(model_info['latent']) #[1, latent_dim]
-    latent = latent.flatten()  # [latent_dim]
-    
+    if use_objlat: 
+        model_id = obj['modelId']
+        model_info = np.load(os.path.join(OBJ_DIR,f"{model_id}", f"{model_id}_norm_pc_latent.npz"))
+        latent = np.array(model_info['latent']) #[1, latent_dim]
+        latent = latent.flatten()  # [latent_dim]
+    else:
+        latent = None
+
     cs = np.zeros(len(THREED_FRONT_CATEGORY), dtype=np.float32)
     # print(obj['coarseSemantic'])
     cid = THREED_FRONT_CATEGORY.index(THREED_FRONT_FURNITURE[obj['coarseSemantic']])
@@ -352,7 +380,9 @@ def embed_obj_token(obj):
     scale = np.array(obj['scale'])
 
     return np.concatenate((
-        cs, bbox_max, bbox_min, translate, rotation, scale,latent
+        cs, bbox_max, bbox_min, translate, rotation, scale, latent 
+    )) if use_objlat else np.concatenate((
+        cs, bbox_max, bbox_min, translate, rotation, scale
     ))
 
 def decode_obj_token(obj_token, use_objlat = True):
@@ -367,7 +397,7 @@ def decode_obj_token(obj_token, use_objlat = True):
 
     coarse_semantic = THREED_FRONT_CATEGORY[np.argmax(cs)]
     q_size =  abs(bbox_max - bbox_min)
-    model_id = get_modelid_by_latent_and_size(latent, q_size, coarse_semantic) if use_objlat else get_modelid_by_size(q_size, coar)
+    model_id = get_modelid_by_latent_and_size(latent, q_size, coarse_semantic) if use_objlat else get_modelid_by_size(q_size, coarse_semantic)
 
     return {
         'coarseSemantic': coarse_semantic,

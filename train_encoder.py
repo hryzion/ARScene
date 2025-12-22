@@ -2,7 +2,6 @@ import torch
 from networks.roomlayout.RoomLayoutVQVAE import RoomLayoutVQVAE
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 from datasets.SceneTokenNormalizer import SceneTokenNormalizer
-import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -172,14 +171,15 @@ if __name__ == '__main__':
     # --------------------- dataset -----------------------
     dataset_config = config.get('dataset', {})
     dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
+    dataset_padded_length = dataset_config.get('padded_length', None)
     if not dataset_config.get('use_objlat'):
         dataset_dir += '_wo_lat'
 
-    train_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='train')
-    val_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='test')
+    train_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='train',padded_length=dataset_padded_length)
+    val_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='test',padded_length=dataset_padded_length)
 
     # Normalizer
-    normalizer = SceneTokenNormalizer(category_dim=31, rotation_mode='sincos')
+    normalizer = SceneTokenNormalizer(category_dim=31, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
     if os.path.exists(f'{dataset_dir}/normalizer_stats.json'):
         normalizer.load(f'{dataset_dir}/normalizer_stats.json')
     else:

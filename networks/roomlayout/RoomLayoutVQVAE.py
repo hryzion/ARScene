@@ -91,21 +91,23 @@ class SceneLayoutTokenDecoder(nn.Module):
 
 
 class RoomLayoutVQVAE(nn.Module):
-    def __init__(self, token_dim=64, num_embeddings=512, enc_depth=4, dec_depth=4, heads=4, configs = None):
+    def __init__(self, token_dim=64, num_embeddings=512, enc_depth=4, dec_depth=4, heads=4, test_mode = False, configs = None):
         super().__init__()
 
         # VQVAE encoder and decoder
 
         attr_dim = int(configs['dataset']['attr_dim'])
-
-
+        self.token_dim = token_dim
+        self.test_mode = test_mode
         self.encoder = SceneLayoutTokenEncoder(token_dim, depth=enc_depth, heads=heads,attr_dim=attr_dim)
         self.quantizer = VectorQuantizer(num_embeddings, token_dim)
 
         self.token_sequentializer = TokenSequentializer(embed_dim=token_dim, resi_ratio=0.5, share_phi=1, use_prior_cluster=False)
         self.decoder = SceneLayoutTokenDecoder(token_dim, depth=dec_depth, heads=heads,attr_dim=attr_dim)
         self.configs = configs
-
+        if self.test_mode:
+            self.eval()
+            [p.requires_grad_(False) for p in self.parameters()]
 
     def forward(self, x, padding_mask=None):  # x: [B, N, D], mask: [B, N]
         z = self.encoder(x, padding_mask=padding_mask) # B, N+1, D
@@ -126,6 +128,24 @@ class RoomLayoutVQVAE(nn.Module):
         root = x[:, :1, :]    # B, 1, D
         recon = x[:, 1:, :]   # B, N, D
         return root, recon, vq_loss, indices
+    
+    def encode_obj_tokens(self,x, padding_mask=None):
+        z = self.encoder(x, padding_mask=padding_mask) # B, N+1, D
+        if self.configs['model']['encoder']['bottleneck'] == 'ae':
+            z_q = z
+        elif self.configs['model']['encoder']['bottleneck'] == 'vqvae':
+            z_q, _, _ = self.quantizer(z) # B, N+1, D   
+        elif self.configs['model']['encoder']['bottleneck'] == 'residual-vae':
+            z_q = self.token_sequentializer(z, padding_mask=padding_mask)
+        else:
+            raise NotImplementedError(f"Unknown bottleneck type: {self.configs['model']['bottleneck']}")
+        return z_q
+    
+    def fhat_to_img(self, f_hat, padding_mask = None):
+        x = self.decoder(f_hat, padding_mask)
+        root = x[:, :1, :]    # B, 1, D
+        recon = x[:, 1:, :]   # B, N, D
+        return recon
 
 def compute_loss(model, x, padding_mask):
     """

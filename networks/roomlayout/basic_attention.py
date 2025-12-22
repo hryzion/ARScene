@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from utils import check
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, dim, heads=8, attn_drop = 0., proj_drop = 0.):
@@ -21,6 +22,13 @@ class MultiHeadAttention(nn.Module):
 
         self.attn_drop = attn_drop
         self.proj_drop = nn.Dropout(proj_drop, inplace=True) if proj_drop > 0 else nn.Identity()
+
+        self.caching, self.cached_k, self.cached_v = False, None, None
+    
+    def kv_caching(self, enabled: bool):
+        self.caching = enabled
+        self.cached_k = None
+        self.cached_v = None
         
 
     def forward(self, query, key, value,
@@ -41,25 +49,43 @@ class MultiHeadAttention(nn.Module):
         K = self.k_proj(key).reshape(B, Lk, self.heads, self.dk).transpose(1,2)    # (B,H,Lk,dk)
         V = self.v_proj(value).reshape(B, Lk, self.heads, self.dk).transpose(1,2)  # (B,H,Lk,dk)
 
+        if self.caching:
+            if self.cached_k is None:
+                self.cached_k = K
+                self.cached_v = V
+            else:
+                assert self.cached_v is not None
+                K = self.cached_k = torch.cat((self.cached_k, K), dim=2)
+                V = self.cached_v = torch.cat((self.cached_v, V), dim=2)
+
         # Scaled dot-product
         scores = (Q @ K.transpose(-2, -1)) / math.sqrt(self.dk)  # (B,H,Lq,Lk)
-
+        # print("scores shape: ",scores.shape)
+        # print('attn_mask:', attn_mask.shape if attn_mask is not None else "Empty")
         # 自定义 attn_mask
+        
         if attn_mask is not None:
             # 支持 (Lq,Lk) 或 (B,Lq,Lk)
             if attn_mask.dim() == 2:
                 mask = attn_mask[None, None, :, :].to(dtype=torch.bool, device=scores.device)
+                scores = scores.masked_fill(mask, float('-inf'))
+
             elif attn_mask.dim() == 3:
                 mask = attn_mask[:, None, :, :].to(dtype=torch.bool, device=scores.device)
+                scores = scores.masked_fill(mask, float('-inf'))
+            elif attn_mask.dim() == 4:
+                scores = scores + attn_mask
             else:
                 raise ValueError("attn_mask must be 2D or 3D")
-            scores = scores.masked_fill(mask, float('-inf'))
+        
+
 
         # key padding mask
+        # print("key_padding_mask:", key_padding_mask.shape if key_padding_mask is not None else "Empty")
         if key_padding_mask is not None:
             mask = key_padding_mask[:, None, None, :].bool()
-            scores = scores.masked_fill(mask, float('-inf'))
-
+            scores = scores.masked_fill(~mask, float('-inf'))
+        
         # softmax
         dropout_p = self.attn_drop if self.training else 0.
         attn = F.dropout(F.softmax(scores, dim=-1), p=dropout_p) if dropout_p > 0 else F.softmax(scores, dim=-1)
@@ -112,7 +138,7 @@ class AdaptLayerNormSelfAttention(nn.Module):
         self.cond_dim = cond_dim
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.self_attn = SelfAttention(dim = embed_dim, heads=heads, attn_drop=attn_drop, proj_drop=drop)
-        self.ffn = FFN(dim_in=embed_dim, dim_hidden= round(embed_dim, mlp_ratio), dropout=drop)
+        self.ffn = FFN(dim_in=embed_dim, dim_hidden= round(embed_dim* mlp_ratio), dropout=drop)
         self.ln_wo_grad = norm_layer(embed_dim, elementwise_affine=False)
         self.shared_aln = shared_aln
         if self.shared_aln:
@@ -120,14 +146,30 @@ class AdaptLayerNormSelfAttention(nn.Module):
         else:
             lin = nn.Linear(cond_dim, 6*embed_dim)
             self.ada_lin = nn.Sequential(nn.SiLU(inplace=False), lin)
-    def forward(self, x, cond, causal_attn = None, key_padding_mask = None):
+    def forward(self, x, cond, causal_mask = None, key_padding_mask = None):
         if self.shared_aln:
+            cond = cond[:,None,None,:]
             gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond).unbind(2) # 116C + B16C =unbind(2)=> 6 B1C
+            # gamma1 = gamma1.clamp(-5, 5)
+            # gamma2 = gamma2.clamp(-5, 5)
+            # scale1 = scale1.clamp(-5, 5)
+            # scale2 = scale2.clamp(-5, 5)
+            # shift1 = shift1.clamp(-1, 1)
+            # shift2 = shift2.clamp(-1, 1)
         else:
-            gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond).view(-1, 1, 6, self.C).unbind(2)
-        
-        x = x + self.drop_path(self.self_attn( self.ln_wo_grad(x).mul(scale1.add(1)).add_(shift1), attn_mask=causal_attn, key_padding_mask=key_padding_mask ).mul_(gamma1))
-        x = x + self.drop_path(self.ffn( self.ln_wo_grad(x).mul(scale2.add(1)).add_(shift2) ).mul(gamma2)) # this mul(gamma2) cannot be in-placed when FusedMLP is used
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond).view(-1, 1, 6, self.embed_dim).unbind(2)
+            gamma1 = gamma1.clamp(-5, 5)
+            gamma2 = gamma2.clamp(-5, 5)
+            scale1 = scale1.clamp(-5, 5)
+            scale2 = scale2.clamp(-5, 5)
+            shift1 = shift1.clamp(-1, 1)
+            shift2 = shift2.clamp(-1, 1)
+            
+        # check("in x:", x)
+        x = x + self.drop_path(self.self_attn( self.ln_wo_grad(x).mul(scale1.add(1)).add(shift1), attn_mask=causal_mask, key_padding_mask=key_padding_mask ).mul(gamma1))
+        # check("out attn:", x)
+        x = x + self.drop_path(self.ffn( self.ln_wo_grad(x).mul(scale2.add(1)).add(shift2) ).mul(gamma2)) # this mul(gamma2) cannot be in-placed when FusedMLP is used
+        # check("out ffn:", x)
         return x
     
 class AdaptLayerNormCrossAttention(nn.Module):
@@ -135,12 +177,12 @@ class AdaptLayerNormCrossAttention(nn.Module):
         self, block_idx, last_drop_p, embed_dim, cond_dim, shared_aln: bool, norm_layer,
         heads, mlp_ratio=4., drop=0., attn_drop=0., drop_path=0., attn_l2_norm=False
     ):
-        super(AdaptLayerNormSelfAttention, self).__init__()
+        super(AdaptLayerNormCrossAttention, self).__init__()
         self.block_idx, self.last_drop_p, self.embed_dim = block_idx, last_drop_p, embed_dim
         self.cond_dim = cond_dim
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
-        self.self_attn = CrossAttention(dim = embed_dim, heads=heads, attn_drop=attn_drop, proj_drop=drop)
-        self.ffn = FFN(dim_in=embed_dim, dim_hidden= round(embed_dim, mlp_ratio), dropout=drop)
+        self.cross_attn = CrossAttention(dim = embed_dim, heads=heads, attn_drop=attn_drop, proj_drop=drop)
+        self.ffn = FFN(dim_in=embed_dim, dim_hidden= round(embed_dim* mlp_ratio), dropout=drop)
         self.ln_wo_grad = norm_layer(embed_dim, elementwise_affine=False)
         self.shared_aln = shared_aln
         if self.shared_aln:
@@ -148,17 +190,69 @@ class AdaptLayerNormCrossAttention(nn.Module):
         else:
             lin = nn.Linear(cond_dim, 6*embed_dim)
             self.ada_lin = nn.Sequential(nn.SiLU(inplace=False), lin)
-    def forward(self, x, cond, cond_cross, causal_attn = None, key_padding_mask = None):
+    def forward(self, x, cond, cond_cross, causal_mask = None, key_padding_mask = None):
         if self.shared_aln:
+            cond = cond[:,None,None,:]
             gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond).unbind(2) # 116C + B16C =unbind(2)=> 6 B1C
+            # gamma1 = gamma1.clamp(-5, 5)
+            # gamma2 = gamma2.clamp(-5, 5)
+            # scale1 = scale1.clamp(-5, 5)
+            # scale2 = scale2.clamp(-5, 5)
+            # shift1 = shift1.clamp(-1, 1)
+            # shift2 = shift2.clamp(-1, 1)
+
         else:
-            gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond).view(-1, 1, 6, self.C).unbind(2)
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond).view(-1, 1, 6, self.embed_dim).unbind(2)
+            gamma1 = gamma1.clamp(-5, 5)
+            gamma2 = gamma2.clamp(-5, 5)
+            scale1 = scale1.clamp(-5, 5)
+            scale2 = scale2.clamp(-1, 1)
+            shift1 = shift1.clamp(-1, 1)
+            shift2 = shift2.clamp(-1, 1)
+
+        # check("in x:", x)
+
+        x = x + self.drop_path(self.cross_attn( self.ln_wo_grad(x).mul(scale1.add(1)).add(shift1), cond_cross, attn_mask=causal_mask, key_padding_mask=key_padding_mask ).mul(gamma1))
+        # check("out attn:", x)
         
-        x = x + self.drop_path(self.self_attn( self.ln_wo_grad(x).mul(scale1.add(1)).add_(shift1), cond_cross, attn_mask=causal_attn, key_padding_mask=key_padding_mask ).mul_(gamma1))
-        x = x + self.drop_path(self.ffn( self.ln_wo_grad(x).mul(scale2.add(1)).add_(shift2) ).mul(gamma2)) # this mul(gamma2) cannot be in-placed when FusedMLP is used
+        x = x + self.drop_path(self.ffn( self.ln_wo_grad(x).mul(scale2.add(1)).add(shift2) ).mul(gamma2) ) # this mul(gamma2) cannot be in-placed when FusedMLP is used
+        # check("out ffn:", x)
         return x
     
-class SelfCompressor(nn.Module):
+class AdaptLayerNormDecoderBlock(nn.Module):
+    def __init__(
+        self, block_idx, last_drop_p, embed_dim, cond_dim,
+        shared_aln: bool, norm_layer,
+        num_heads, mlp_ratio=4., drop=0., attn_drop=0., drop_path=0.,
+        attn_l2_norm=False
+    ):
+        super().__init__()
+        self.self_attn_block = AdaptLayerNormSelfAttention(block_idx,last_drop_p,embed_dim,cond_dim,
+            shared_aln, norm_layer,
+            num_heads, mlp_ratio, drop, attn_drop, drop_path,
+            attn_l2_norm
+        )
+        self.cross_attn_block = AdaptLayerNormCrossAttention(block_idx,last_drop_p,embed_dim,cond_dim,
+            shared_aln, norm_layer,
+            num_heads, mlp_ratio, drop, attn_drop, drop_path,
+            attn_l2_norm
+        )
+    
+    def enable_kv_cache(self, enabled :bool):
+        self.self_attn_block.self_attn.kv_caching(enabled)
+
+    def forward(self, x, cond_BD, cond_cross, attn_bias, self_key_padding_mask = None, cross_kv_padding_mask = None):
+        x = self.self_attn_block(x,cond_BD,causal_mask = attn_bias,key_padding_mask = self_key_padding_mask)  # Due to unified length of sar input (sum(t_scales)+N), key padding mask is supposed to be 0.
+        # print(f"After self attn block:\n" ,x[0,0])
+        # check("self attn block", x)
+
+        x = self.cross_attn_block(x, cond_BD, cond_cross, causal_mask = None, key_padding_mask = cross_kv_padding_mask) # cross attention doesn't need causal mask
+        # check("cross attn block", x)
+        # print()
+        # print(f"After cross attn block:\n" ,x[0,0])
+        return x
+    
+class SelfAttnConv(nn.Module):
     def __init__(self, dim, num_query_tokens, heads=8):
         """
         dim: 序列特征维度
@@ -192,7 +286,7 @@ class SelfCompressor(nn.Module):
         compressed = out[:, :self.num_query_tokens, :]  # (B, num_query_tokens, C)
         return compressed
 
-class CrossCompressor(nn.Module):
+class CrossAttnConv(nn.Module):
     def __init__(self, dim, num_query_tokens, heads=8):
         """
         dim: 序列特征维度
@@ -231,7 +325,7 @@ class FFN(nn.Module):
         dim_out=None,   # 输出维度（默认和 dim_in 一样）
         activation="gelu",
         dropout=0.0,
-        residual=True,
+        residual=False,
         layernorm=False,
         gated=False,
     ):
@@ -287,3 +381,6 @@ class FFN(nn.Module):
             x = x + residual  # 残差
 
         return x
+    
+
+

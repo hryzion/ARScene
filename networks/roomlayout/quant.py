@@ -14,12 +14,14 @@ class TokenSequentializer(nn.Module):
         resi_ratio = 0.5,
         share_phi = 1,  # 0: non-shared, 1: shared, 2: partially-shared 
         use_prior_cluster = False,     
-        t_scales = [1, 2, 4, 7, 11]   # + N (last scale is the full resolution)
+        t_scales = [1, 2, 4, 7, 11],   # + N (last scale is the full resolution)
+        padded_length = 32
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.resi_ratio = resi_ratio
         self.use_prior_cluster = use_prior_cluster
+        self.padded_length = 32
 
         self.down_resampler = DiscreteResampler(d_model=embed_dim, nhead=4)
         self.up_resampler = DiscreteResampler(d_model=embed_dim, nhead=4)
@@ -129,7 +131,7 @@ class TokenSequentializer(nn.Module):
 
 
     # ---------------------- training sar only --------------------------#
-    def generate_different_scale_gt(self, gt_residual_fm:List[torch.Tensor], padding_mask = None) -> torch.Tensor:
+    def generate_sar_input(self, gt_residual_fm:List[torch.Tensor], padding_mask = None):
         next_scales = []
         B = gt_residual_fm[0].shape[0]
         D = self.embed_dim
@@ -144,19 +146,15 @@ class TokenSequentializer(nn.Module):
             ## before last stage
             for ti in range(SN):
                 f_down = gt_residual_fm[ti]
-                f_up = self.up_resampler(f_down, M=N)  # B x N x D
+                f_up = self.up_resampler(f_down, M=N) if f_down.shape[1] < N else f_down # B x N x D 
                 f_hat = f_hat + self.seq_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
-                token_len_next = self.t_scales[ti + 1]
+                token_len_next = self.t_scales[ti + 1] if ti + 1 < SN else N
                 next_scales.append(self.down_resampler(f_hat, M=token_len_next, padding_mask = padding_mask))  # B x token_len_next x D
             
-            ## last stage
-            f_down = gt_residual_fm[-1]
-            f_up = f_down
-            f_hat = f_hat + self.seq_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
-            next_scales.append(f_hat)  # B x N x D
-
-
-        return torch.cat(next_scales, dim=1)  # B x (sum of token lens) x D
+        L = sum(self.t_scales)
+        pre_mask = torch.full((B,L), False, dtype=torch.bool).to(padding_mask.device) # padding = True
+        gt_mask = torch.cat([pre_mask, padding_mask], dim=1)
+        return torch.cat(next_scales, dim=1), gt_mask  # B x (sum of token lens) x D
     
     def get_fhat_from_residual_fm(self, inference_residual_fm:List[torch.Tensor],padding_mask = None) -> torch.Tensor:
         B = inference_residual_fm[0].shape[0]
@@ -180,20 +178,20 @@ class TokenSequentializer(nn.Module):
 
         return f_hat
 
-    def get_next_autoregressive_input(self, stage_i, SN, f_hat, hs, padding_mask = None):
+    def get_next_autoregressive_input(self, stage_i, SN, f_hat, hs):
         '''
             Get the next input feature map for auto-regressive model
         '''
         if self.use_prior_cluster:
             raise NotImplementedError
         else:
-            N = self.t_scales[-1]
-            if stage_i != SN - 1:
-                h = self.seq_resi[stage_i/(SN-1)](self.up_resampler(hs, M=N)).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+            N = self.padded_length+1
+            if stage_i < SN - 1:
+                h = self.seq_resi[stage_i/(SN-2)](self.up_resampler(hs, M=N))
                 f_hat += h
-                return f_hat, self.down_resampler(f_hat, size = self.t_scales[stage_i + 1], padding_mask = padding_mask)
+                return f_hat, self.down_resampler(f_hat, M = self.t_scales[stage_i + 1] if stage_i < SN-2 else N) 
             else:
-                h = self.seq_resi[stage_i/(SN-1)](hs).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+                h = self.seq_resi[stage_i/(SN-1)](hs)
                 f_hat += h
                 return f_hat, f_hat
 

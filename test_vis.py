@@ -9,8 +9,8 @@ from utils import decode_obj_tokens_with_mask, visualize_result, pack_scene_json
 import os
 
 
-def load_test_dataset(dataset_dir):
-    return ThreeDFrontDataset(npz_dir=f'{dataset_dir}',split='test')
+def load_test_dataset(dataset_dir, dataset_padded_length):
+    return ThreeDFrontDataset(npz_dir=f'{dataset_dir}',split='test', padded_length=dataset_padded_length)
 
 def main():
     import yaml
@@ -42,6 +42,8 @@ def main():
 
     dataset_config = config.get('dataset', {})
     dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
+    dataset_padded_length = dataset_config.get('padded_length', None)
+
     if not dataset_config.get('use_objlat'):
         dataset_dir += '_wo_lat'
     # 1. 初始化模型并加载权重
@@ -60,7 +62,7 @@ def main():
 
 
     # 2. 准备测试集和 DataLoader
-    test_dataset = load_test_dataset(dataset_dir)
+    test_dataset = load_test_dataset(dataset_dir, dataset_padded_length=dataset_padded_length)
     test_dataset.transform = normalizer.transform
     test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 

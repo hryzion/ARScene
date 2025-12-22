@@ -1,0 +1,42 @@
+model:
+  type: sar
+  depth: 8
+  num_heads: 8
+  mlp_ratio: 4.0
+  drop_rate: 0.1
+  attn_drop_rate: 0.1
+  drop_path_rate: 0.2
+  shared_aln: true
+  norm_eps: 1e-6
+  attn_l2_norm: False
+  use_prior_cluster: False
+
+  feat_extractor: resnet18
+  bottleneck : residual-vae
+
+  encoder:
+    token_dim: 32
+    encoder_depth: 4
+    decoder_depth: 4
+    num_heads: 8
+    num_embeddings: 512
+    bottleneck : residual-vae
+    pretrained_path: ./pretrained/roomautoencoders/exp3/ResidualAutoEncoder.pth
+
+dataset:
+  use_objlat: False
+  attr_dim: 52
+  padded_length: 32
+
+super_parameters:
+  epochs: 300
+  batch_size: 64
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  cuda: 0
+
+save:
+  save_folder: ./pretrained/sceneautoregressive/exp4
+
+text_condition: true
+room_mask_condition: true

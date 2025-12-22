@@ -5,7 +5,7 @@ import math
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 
 class SceneTokenNormalizer:
-    def __init__(self, category_dim, obj_feat = 64, rotation_mode='sincos'):
+    def __init__(self, category_dim, obj_feat = 64, rotation_mode='sincos',use_objlat=True):
         """
         category_dim: 分类 token 的维度（len(THREED_FRONT_CATEGORY)）
         rotation_mode: 'sincos' 或 'raw'
@@ -16,6 +16,7 @@ class SceneTokenNormalizer:
         
         self.rotation_mode = rotation_mode
         self.stats = None  # {'bbox_max': {'mean':..., 'std':...}, ...}
+        self.use_objlat = use_objlat
 
     def fit(self, dataset, mask_key='attention_mask', batch_size=8):
         """统计训练集的 mean/std，排除 padding"""
@@ -29,7 +30,7 @@ class SceneTokenNormalizer:
             'rotation': slice(self.category_dim + 9, self.category_dim + 12),
             'scale': slice(self.category_dim + 12, self.category_dim+15),
             'latent': slice(self.category_dim + 15, self.origin_dim)
-        } if 'latent' in self.stats.keys() else {
+        } if self.use_objlat else {
             'bbox_max': slice(self.category_dim, self.category_dim + 3),
             'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
             'translate': slice(self.category_dim + 6, self.category_dim + 9),
@@ -79,7 +80,7 @@ class SceneTokenNormalizer:
             'rotation': slice(self.category_dim + 9, self.category_dim + 12),
             'scale': slice(self.category_dim + 12, self.category_dim+15),
             'latent': slice(self.category_dim + 15, self.origin_dim)
-        } if 'latent' in self.stats.keys() else {
+        } if self.use_objlat else {
             'bbox_max': slice(self.category_dim, self.category_dim + 3),
             'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
             'translate': slice(self.category_dim + 6, self.category_dim + 9),
@@ -121,7 +122,7 @@ class SceneTokenNormalizer:
             'rotation': slice(self.category_dim + 9, self.category_dim + 12),
             'scale': slice(self.category_dim + 12, self.category_dim + 15),
             'latent': slice(self.category_dim + 15, self.origin_dim)
-        } if 'latent' in self.stats.keys() else {
+        } if self.use_objlat else {
             'bbox_max': slice(self.category_dim, self.category_dim + 3),
             'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
             'translate': slice(self.category_dim + 6, self.category_dim + 9),

@@ -5,6 +5,7 @@ def parse_arguments():
     parser.add_argument('--config', type=str, default='./training_configs/residual_config.yaml', help='Path to the config file')
     parser.add_argument('--exp', type=int, default=0)
     parser.add_argument('--cuda' ,type=int, default=0)
+    parser.add_argument('--wandb', action='store_true')
     args = parser.parse_args()
     return args
 

@@ -1,0 +1,12 @@
+{
+    "include": [
+        "datasets",
+        "losses",
+        "networks",
+        "utils.py"
+    ],
+
+    "exclude": [
+        "ChanferDistancePytorch"
+    ]
+}

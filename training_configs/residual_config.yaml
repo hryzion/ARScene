@@ -1,6 +1,6 @@
 model:
   type: ResidualAutoEncoder
-  token_dim: 32
+  token_dim: 64
   encoder_depth: 4
   decoder_depth: 4
   num_heads: 8
@@ -8,15 +8,16 @@ model:
   bottleneck : residual-vae
 
 dataset:
-  use_objlat: False
-  attr_dim: 52
+  use_objlat: true
+  attr_dim: 116
+  padded_length: 32
 
 super_parameters:
-  epochs: 300
+  epochs: 400
   batch_size: 64
   learning_rate: 0.0001
   weight_decay: 0.00001
-  cuda: 0
+  cuda: 1
 
 save:
-  save_folder: ./pretrained/roomautoencoders/exp1
+  save_folder: ./pretrained/roomautoencoders/exp2
