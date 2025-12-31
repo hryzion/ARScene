@@ -1,0 +1,30 @@
+dataset:
+  use_objlat: False
+
+super_parameters:
+  epochs: 5000
+  batch_size: 128
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  cuda: 0
+
+save:
+  save_folder: ./pretrained/atiss/exp0
+
+
+network: 
+  type: atiss
+  n_layers: 4
+  n_heads: 8
+  query_dimensions: 64
+  value_dimensions: 64
+  feed_forward_dimensions: 1024
+  hidden2output_layer: "autoregressive_mlc"
+  hidden_dims: 512
+  with_extra_fc: false
+  bbox_output: "autoregressive_mlc"
+  n_mixtures: 10
+  use_room_mask_as_features: true
+
+loss:
+  beta: 0.25

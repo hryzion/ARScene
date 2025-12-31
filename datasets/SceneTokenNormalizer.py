@@ -5,25 +5,21 @@ import math
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 
 class SceneTokenNormalizer:
-    def __init__(self, category_dim, obj_feat = 64, rotation_mode='sincos',use_objlat=True):
+    def __init__(self, category_dim, obj_feat = 64, rotation_mode='sincos',use_objlat=True, atiss = False):
         """
         category_dim: 分类 token 的维度（len(THREED_FRONT_CATEGORY)）
         rotation_mode: 'sincos' 或 'raw'
         """
         self.category_dim = category_dim
-        self.obj_dim = obj_feat
-        self.origin_dim = category_dim + 15 + obj_feat  # 原始维度
+        self.obj_dim = obj_feat if use_objlat else 0
+        self.origin_dim = category_dim + 15 + obj_feat if not atiss else category_dim + 7  # 原始维度
         
         self.rotation_mode = rotation_mode
-        self.stats = None  # {'bbox_max': {'mean':..., 'std':...}, ...}
+        
         self.use_objlat = use_objlat
+        self.stats = {}
 
-    def fit(self, dataset, mask_key='attention_mask', batch_size=8):
-        """统计训练集的 mean/std，排除 padding"""
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
-        sums, sums_sq, counts = {}, {}, {}
-
-        slices = {
+        self.slices = {
             'bbox_max': slice(self.category_dim, self.category_dim + 3),
             'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
             'translate': slice(self.category_dim + 6, self.category_dim + 9),
@@ -37,6 +33,21 @@ class SceneTokenNormalizer:
             'rotation': slice(self.category_dim + 9, self.category_dim + 12),
             'scale': slice(self.category_dim + 12, self.category_dim+15),
         }
+
+        if atiss:
+            self.slices = {
+                'translate': slice(self.category_dim, self.category_dim + 3),
+                'size' : slice(self.category_dim + 3, self.category_dim + 6),
+                'rotation': slice(self.category_dim + 6, self.category_dim + 7),
+            }
+
+   
+
+    def fit(self, dataset, mask_key='attention_mask', batch_size=8):
+        """统计训练集的 mean/std，排除 padding"""
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
+        sums, sums_sq, counts = {}, {}, {}
+        slices = self.slices
 
         for batch in loader:
             obj_tokens = batch['obj_tokens']  # [B, O, D]
@@ -59,12 +70,14 @@ class SceneTokenNormalizer:
                 sums_sq[key] += (vals ** 2).sum(0)
                 counts[key] += vals.size(0)
 
-        self.stats = {}
         for key in sums:
             mean = sums[key] / counts[key]
             var = (sums_sq[key] / counts[key]) - mean ** 2
             std = torch.sqrt(var + 1e-6)
-            self.stats[key] = {'mean': mean, 'std': std}
+            if key in self.stats.keys():
+                self.stats[key].update({'mean': mean, 'std': std})
+            else:
+                self.stats[key] = {'mean': mean, 'std': std}
 
     def transform(self, obj_tokens):
         """标准化 bbox/translate/scale，rotation → sincos"""
@@ -73,21 +86,8 @@ class SceneTokenNormalizer:
             B, N, D = original_shape
             obj_tokens = obj_tokens.view(-1, D)  # [B*N, D]
         
-        slices = {
-            'bbox_max': slice(self.category_dim, self.category_dim + 3),
-            'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
-            'translate': slice(self.category_dim + 6, self.category_dim + 9),
-            'rotation': slice(self.category_dim + 9, self.category_dim + 12),
-            'scale': slice(self.category_dim + 12, self.category_dim+15),
-            'latent': slice(self.category_dim + 15, self.origin_dim)
-        } if self.use_objlat else {
-            'bbox_max': slice(self.category_dim, self.category_dim + 3),
-            'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
-            'translate': slice(self.category_dim + 6, self.category_dim + 9),
-            'rotation': slice(self.category_dim + 9, self.category_dim + 12),
-            'scale': slice(self.category_dim + 12, self.category_dim+15),
-        }
-
+        slices = self.slices
+        # print(self.stats)
         normalized = obj_tokens.clone()
         for key, s in slices.items():
             if key == 'rotation':
@@ -115,20 +115,7 @@ class SceneTokenNormalizer:
             B, N, D = original_shape
             obj_tokens = obj_tokens.reshape(-1, D)  # [B*N, D]
 
-        slices = {
-            'bbox_max': slice(self.category_dim, self.category_dim + 3),
-            'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
-            'translate': slice(self.category_dim + 6, self.category_dim + 9),
-            'rotation': slice(self.category_dim + 9, self.category_dim + 12),
-            'scale': slice(self.category_dim + 12, self.category_dim + 15),
-            'latent': slice(self.category_dim + 15, self.origin_dim)
-        } if self.use_objlat else {
-            'bbox_max': slice(self.category_dim, self.category_dim + 3),
-            'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
-            'translate': slice(self.category_dim + 6, self.category_dim + 9),
-            'rotation': slice(self.category_dim + 9, self.category_dim + 12),
-            'scale': slice(self.category_dim + 12, self.category_dim+15),
-        }
+        slices = self.slices
 
         denorm = obj_tokens.clone()
         for key, s in slices.items():
@@ -155,11 +142,103 @@ class SceneTokenNormalizer:
         return ret_denorm
 
     def save(self, path):
-        serializable = {k: {'mean': v['mean'].tolist(), 'std': v['std'].tolist()} for k, v in self.stats.items()}
+        serializable = {k: {item_name: v[item_name].tolist() for item_name in v.keys()} for k, v in self.stats.items()}
         with open(path, 'w') as f:
             json.dump(serializable, f)
 
     def load(self, path):
         with open(path, 'r') as f:
             data = json.load(f)
-        self.stats = {k: {'mean': torch.tensor(v['mean']), 'std': torch.tensor(v['std'])} for k, v in data.items()}
+        self.stats = {k: {item_name: torch.tensor(v[item_name]) for item_name in v.keys()} for k, v in data.items()}
+
+
+    def fit_atiss(self, dataset, mask_key='attention_mask', batch_size=8):
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
+        slices = self.slices
+        mins, maxs = {}, {}
+        for batch in loader:
+            obj_tokens = batch['obj_tokens']      # [B, O, D]
+            # obj_tokens = self.transform(obj_tokens)
+            B, O, D = obj_tokens.shape
+            mask = batch.get(mask_key, torch.ones(B, O, device=obj_tokens.device))
+            mask = ~mask                           # padding=True, valid=False
+
+            for key, s in slices.items():
+                vals = obj_tokens[:, :, s]         # [B, O, C]
+                valid = mask.unsqueeze(-1).expand_as(vals)
+                vals = vals[valid].view(-1, vals.size(-1))  # [N, C]
+
+                if vals.numel() == 0:
+                    continue
+
+                batch_min = vals.min(dim=0).values
+                batch_max = vals.max(dim=0).values
+
+                if key not in mins:
+                    mins[key] = batch_min
+                    maxs[key] = batch_max
+                else:
+                    mins[key] = torch.minimum(mins[key], batch_min)
+                    maxs[key] = torch.maximum(maxs[key], batch_max)
+
+        for key in mins:
+            if key in self.stats.keys():
+                self.stats[key].update({
+                    'min': mins[key],
+                    'max': maxs[key]
+                })
+            else:
+                self.stats[key] = {
+                    'min': mins[key],
+                    'max': maxs[key]
+                }
+
+    def transform_atiss(self, obj_tokens):
+        """标准化 bbox/translate/scale，rotation → sincos"""
+        original_shape = obj_tokens.shape
+        if obj_tokens.dim() == 3:
+            B, N, D = original_shape
+            obj_tokens = obj_tokens.view(-1, D)  # [B*N, D]
+
+        slices =self.slices
+        normalized = obj_tokens.clone()
+        for key, s in slices.items():
+            min_s, max_s = self.stats[key]['min'].to(obj_tokens.device), self.stats[key]['max'].to(obj_tokens.device)
+            normalized[:, s] = self.normalize(normalized[:, s], min_s, max_s)
+        return normalized
+    
+    def invert_transform_atiss(self, obj_tokens):
+        original_shape = obj_tokens.shape
+        if obj_tokens.dim() == 3:
+            B, N, D = original_shape
+            obj_tokens = obj_tokens.view(-1, D)  # [B*N, D]
+
+        slices = self.slices
+        denorm = obj_tokens.clone()
+        for key, s in slices.items():
+            min_s, max_s = self.stats[key]['min'].to(obj_tokens.device), self.stats[key]['max'].to(obj_tokens.device)
+            denorm[:, s] = self.denormalize(denorm[:, s], min_s, max_s)
+        return denorm
+    
+    def save_atiss(self, path):
+        serializable = {k: {'min': v['min'].tolist(), 'max': v['max'].tolist()} for k, v in self.stats.items()}
+        with open(path, 'w') as f:
+            json.dump(serializable, f)
+
+    def load_atiss(self, path):
+        with open(path, 'r') as f:
+            data = json.load(f)
+        self.stats = {k: {'min': torch.tensor(v['min']), 'max': torch.tensor(v['max'])} for k, v in data.items()}
+
+    def combined_transform(self, obj_tokens):
+        return self.transform_atiss(self.transform(obj_tokens)[:,:-2])
+    
+    def combined_invert_transform(self, obj_tokens):
+        return self.inverse_transform(self.invert_transform_atiss(obj_tokens), False)
+
+    def normalize(self, x, min_x, max_x):
+        x = 2 * (x - min_x) / (max_x - min_x) - 1
+        return torch.clamp(x, -1.0, 1.0)
+    
+    def denormalize(self, x_norm, minv, maxv):
+        return (x_norm + 1) * (maxv - minv) / 2 + minv

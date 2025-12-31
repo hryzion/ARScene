@@ -131,15 +131,7 @@ class RoomLayoutVQVAE(nn.Module):
     
     def encode_obj_tokens(self,x, padding_mask=None):
         z = self.encoder(x, padding_mask=padding_mask) # B, N+1, D
-        if self.configs['model']['encoder']['bottleneck'] == 'ae':
-            z_q = z
-        elif self.configs['model']['encoder']['bottleneck'] == 'vqvae':
-            z_q, _, _ = self.quantizer(z) # B, N+1, D   
-        elif self.configs['model']['encoder']['bottleneck'] == 'residual-vae':
-            z_q = self.token_sequentializer(z, padding_mask=padding_mask)
-        else:
-            raise NotImplementedError(f"Unknown bottleneck type: {self.configs['model']['bottleneck']}")
-        return z_q
+        return z
     
     def fhat_to_img(self, f_hat, padding_mask = None):
         x = self.decoder(f_hat, padding_mask)

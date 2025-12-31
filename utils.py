@@ -110,7 +110,7 @@ def denormalize_tokens(obj_tokens, stats):
 
 
 
-def get_room_attributes(room,use_objlat=True):
+def get_room_attributes(room,use_objlat=True,atiss=False):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
     centralize_room(room)
     room_info = {
@@ -120,7 +120,7 @@ def get_room_attributes(room,use_objlat=True):
     }
     obj_tokens = []
     for obj in room['objList']:
-        obj_token = embed_obj_token(obj,use_objlat=use_objlat)
+        obj_token = embed_obj_token(obj,use_objlat=use_objlat,atiss=atiss)
         if obj_token is not None:
             obj_tokens.append(obj_token)
     obj_tokens = np.array(obj_tokens, dtype=np.float32)
@@ -351,7 +351,7 @@ def get_room_description(centred_room):
     
 
 
-def embed_obj_token(obj, use_objlat=True):
+def embed_obj_token(obj, use_objlat=True,atiss=False):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
     if 'coarseSemantic' not in obj or obj["coarseSemantic"] == 'Window' or obj['coarseSemantic'] == 'Door':
         return None
@@ -368,7 +368,7 @@ def embed_obj_token(obj, use_objlat=True):
     else:
         latent = None
 
-    cs = np.zeros(len(THREED_FRONT_CATEGORY), dtype=np.float32)
+    cs = np.zeros(len(THREED_FRONT_CATEGORY)+2, dtype=np.float32)
     # print(obj['coarseSemantic'])
     cid = THREED_FRONT_CATEGORY.index(THREED_FRONT_FURNITURE[obj['coarseSemantic']])
     cs[cid] = 1.0
@@ -378,12 +378,20 @@ def embed_obj_token(obj, use_objlat=True):
     translate = np.array(obj['translate'])
     rotation = np.array(obj['rotate'])
     scale = np.array(obj['scale'])
+    size = abs(bbox_max-bbox_min)
+    
+    
+    if atiss:
+        return np.concatenate((
+            cs, translate, size, rotation[1:2]
+        ))
 
     return np.concatenate((
         cs, bbox_max, bbox_min, translate, rotation, scale, latent 
     )) if use_objlat else np.concatenate((
         cs, bbox_max, bbox_min, translate, rotation, scale
     ))
+
 
 def decode_obj_token(obj_token, use_objlat = True):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
@@ -427,7 +435,7 @@ def get_modelid_by_size(q_size, category):
         model_ids.append(model_id)
         mses_size.append(np.sum((q_size - model_size)**2))
 
-    ind = np.sort(mses_size)
+    ind = np.argsort(mses_size)
     return model_ids[ind[0]]
 
 
@@ -559,11 +567,14 @@ def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = N
         fig, axes = plt.subplots(2, N, figsize=(5*N, 10))  # 两行分别显示原始和重建结果
     else:
         fig, axes = plt.subplots(1, N, figsize=(5*N, 10))
-    if N == 1:
-        axes = [axes]  # 统一成list方便遍历
+
+    
+    # if N == 1:
+    #     axes = [axes]  # 统一成list方便遍历
 
     for idx, scene in enumerate(recon_data):
-        ax = axes[0, idx]
+
+        ax = axes[0, idx] if N!=1 else axes[0]
         ax.set(xlim=(-4, 4), ylim=(-4, 4))
         ax.set_title(f"Scene {idx}")
         if room_name is not None:
@@ -612,7 +623,7 @@ def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = N
 
     if raw_data is not None:
         for idx, scene in enumerate(raw_data):
-            ax = axes[1, idx]
+            ax = axes[1, idx] if N!=1 else axes[1]
             ax.set(xlim=(-4, 4), ylim=(-4, 4))
             ax.set_title(f"Raw Scene {idx}")
             if room_name is not None:
@@ -1094,6 +1105,9 @@ def Finch_cluster(json_file,room_id, distance_metric='min_distance'):
     print("Partitions:", partitions)
     label_optimal = finch.get_optimal_partition()
     return {"label":label,"label_optimal":label_optimal}
+
+def count_trainable_params(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 if __name__ == "__main__":
     print(len(THREED_FRONT_CATEGORY))

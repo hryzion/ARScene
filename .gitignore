@@ -1,7 +1,9 @@
-datasets/processed
+datasets/processed*
 *.pth
 __pycache__
 datasets/models
+datasets/figures
+datasets/atiss*
 visualizations
 *.npy
 datasets/processed_wo_lat

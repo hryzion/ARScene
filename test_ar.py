@@ -80,7 +80,7 @@ def main():
     if not dataset_config.get('use_objlat'):
         dataset_dir += '_wo_lat'
     obj_feat = 64 if dataset_config['use_objlat'] else 0
-    normalizer = SceneTokenNormalizer(category_dim=31,obj_feat=obj_feat, rotation_mode='sincos')
+    normalizer = SceneTokenNormalizer(category_dim=31,obj_feat=obj_feat, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
     if os.path.exists(f'{dataset_dir}/normalizer_stats.json'):
         normalizer.load(f'{dataset_dir}/normalizer_stats.json')
     else:
@@ -108,7 +108,11 @@ def main():
     sar.to(device)
     sar.eval()
 
+    from losses.ar_loss import AutoregressiveTokenLoss
+    criterion = AutoregressiveTokenLoss(config=config)
+
     with torch.no_grad():
+        print("start_test")
         for batch_idx, batch in enumerate(test_loader):
             room_name = batch['room_name']
             room_shape = batch['room_shape'].to(device)
@@ -116,13 +120,40 @@ def main():
             attention_mask = batch['attention_mask'].to(device)
             text_desc = batch['text_desc']
 
+            token_map = sar.vae.encode_obj_tokens(obj_tokens, padding_mask=attention_mask)
+            key_padding_mask = F.pad(attention_mask, (1, 0), value=False)
+            residual_fm_gt_list = sar.vae_token_sequentializer.generate_residual_fm_gt(token_map, padding_mask=key_padding_mask)
+            # print("ZHX Note: after generate gt")
+            fhat_from_residual = sar.vae_token_sequentializer.get_fhat_from_residual_fm(residual_fm_gt_list, padding_mask=key_padding_mask)
+            # print(fhat_from_residual.shape)
+            recon_from_residual = sar.vae.fhat_to_img(f_hat=fhat_from_residual, padding_mask=attention_mask)
+            # print(recon_from_residual.shape)
+
+
+            x_wo_first, mask_gt = sar.vae_token_sequentializer.generate_sar_input(residual_fm_gt_list, padding_mask=key_padding_mask)
+
+
+
+            residual_fm_gt = torch.cat(residual_fm_gt_list, dim = 1)
+            x_pred, mask_pred = sar(x_wo_first,text_desc, room_shape, key_padding_mask =mask_gt)
+            loss, loss_dict = criterion(x_pred, mask_pred, residual_fm_gt, mask_gt)
+            # print(loss_dict)
+            pred_mask = mask_pred.argmax(dim=2).bool()[:,-sar.padded_length-1:]
+            # print(pred_mask.shape)
+            print(x_pred[0,0])
+            print(residual_fm_gt[0,0])
+            print(F.mse_loss(x_pred[0,0] ,residual_fm_gt[0,0]))
+
+            # exit()
             infer_room, infer_mask = sar.auto_regressive_inference(B = 4, test_desc=text_desc, room_mask=room_shape,cfg=0)
-            root, recon, vq_loss, _ = sar.vae(obj_tokens, padding_mask=attention_mask)
+
             
+            root, recon, vq_loss, _ = sar.vae(obj_tokens, padding_mask=attention_mask)
+            # room_pred = sar.vae.fhat_to_img(f_hat=x_pred, padding_mask=pred_mask)
 
             denormalized_infer = normalizer.inverse_transform(infer_room)
             denormalized_obj_tokens = normalizer.inverse_transform(obj_tokens)
-            denormalized_recon = normalizer.inverse_transform(recon)
+            denormalized_recon = normalizer.inverse_transform(recon_from_residual)
 
             decoded_infer = decode_obj_tokens_with_mask(denormalized_infer, infer_mask, use_objlat=dataset_config['use_objlat'])
             decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'])

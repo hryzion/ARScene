@@ -1,7 +1,5 @@
 import torch
-from networks.roomlayout.RoomLayoutVQVAE import RoomLayoutVQVAE
-from networks.roomlayout.quant import TokenSequentializer
-from networks.roomlayout.RoomLayoutAutoRegressiveNet import RoomLayoutAutoRegressiveNet
+from networks.roomlayout.RCVAE import RCVAE
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 from datasets.SceneTokenNormalizer import SceneTokenNormalizer
 import torch.nn as nn
@@ -12,11 +10,19 @@ from config import parse_arguments
 import os
 import wandb
 from torchvision import models
-from losses.ar_loss import AutoregressiveTokenLoss
+from losses.recon_loss import ObjTokenReconstructionLoss
 import torch.nn.functional as F
 
+def kl_divergence(mu_q, logvar_q, mu_p, logvar_p):
+    return 0.5 * torch.sum(
+        logvar_p - logvar_q +
+        (torch.exp(logvar_q) + (mu_q - mu_p)**2) / torch.exp(logvar_p) - 1,
+        dim=-1
+    )
+
+
 def train_model(
-    model : RoomLayoutAutoRegressiveNet,
+    model : RCVAE,
     train_loader,
     val_loader,
     device,
@@ -29,8 +35,8 @@ def train_model(
 ):  
     
     if use_wandb:
-        wandb.init(project="SAR")
-    t_sequentializer : TokenSequentializer = model.vae_token_sequentializer
+        wandb.init(project="RCVAE")
+    
     optimizer = optim.Adam(model.parameters(), lr=lr)
     if criterion is None:
         criterion = nn.MSELoss()
@@ -44,44 +50,69 @@ def train_model(
     val_ar_loss_recorder = []
     val_mask_loss_recorder = []
 
+    beta = float(config['loss']['beta'])
+
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0
-        train_ar_loss = 0
-        train_mask_loss = 0
+        train_recon_loss = 0
+        train_stop_loss = 0
+        train_kl_loss = 0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]"):
             room_shape = batch['room_shape'].to(device)
             obj_tokens = batch['obj_tokens'].to(device)
             key_padding_mask = batch['attention_mask'].to(device)
             text_desc = batch['text_desc']
 
-            
-            token_map = model.vae.encode_obj_tokens(obj_tokens, padding_mask=key_padding_mask)
-            key_padding_mask = F.pad(key_padding_mask, (1, 0), value=False)
-            
-            residual_fm_gt_list = t_sequentializer.generate_residual_fm_gt(token_map, padding_mask=key_padding_mask)
-            x_wo_first, mask_gt = t_sequentializer.generate_sar_input(residual_fm_gt_list, padding_mask=key_padding_mask)
-            residual_fm_gt = torch.cat(residual_fm_gt_list, dim = 1)
-            optimizer.zero_grad()
+            out = model(x = obj_tokens, x_key_padding_mask = key_padding_mask, room_mask_c = room_shape, text_c = text_desc)
 
-            x_pred, mask_pred = model(x_wo_first,text_desc, room_shape, key_padding_mask =mask_gt)
-            loss, loss_dict = criterion(x_pred, mask_pred, residual_fm_gt, mask_gt)
+            x_pred =  out['x_pred']
+            x_target = obj_tokens
+
+            recon_loss,_ = criterion(x_pred, x_target, key_padding_mask)
+            kl_loss = kl_divergence(
+                out["mu_q"], out["logvar_q"],
+                out["mu_p"], out["logvar_p"]
+            ).mean()
+            
+
+            stop_pred = out['stop_prob']
+            stop_gt = out['stop_gt']
+
+            
+
+            raw_stop_loss = F.binary_cross_entropy(stop_pred, stop_gt, reduction='none').squeeze(-1)
+            
+            valid_mask = (~key_padding_mask).float()
+            
+            raw_stop_loss = raw_stop_loss * valid_mask
+            stop_loss = raw_stop_loss.sum() / valid_mask.sum().clamp(min=1)
+
+            
+
+            loss = recon_loss + stop_loss + beta*kl_loss
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
-            train_ar_loss += loss_dict['loss_x'].item()
-            train_mask_loss += loss_dict['loss_mask'].item()
+            train_recon_loss += recon_loss.item()
+            train_stop_loss += stop_loss.item()
+            train_kl_loss += kl_loss.item()
+
+
 
         avg_train_loss = train_loss / len(train_loader)
-        avg_train_ar_loss = train_ar_loss/len(train_loader)
-        avg_train_mask_loss = train_mask_loss/len(train_loader)
+        avg_train_recon_loss = train_recon_loss/len(train_loader)
+        avg_train_stop_loss = train_stop_loss/len(train_loader)
+        avg_train_kl_loss = train_kl_loss/len(train_loader)
         train_loss_recorder.append(avg_train_loss)
-        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss =  {avg_train_loss:.4f}; AutoRegressive Loss =  {avg_train_ar_loss:.4f}; Mask Loss = {avg_train_mask_loss:.4f}")
+        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss =  {avg_train_loss:.4f};\n Reconstruction Loss =  {avg_train_recon_loss:.4f};\n Stop token Loss = {avg_train_stop_loss:.4f}; \n KL Loss = {avg_train_kl_loss:.4f}; \n")
 
         model.eval()
         val_loss = 0
-        val_ar_loss = 0
-        val_mask_loss = 0
+        val_recon_loss = 0
+        val_stop_loss = 0
+        val_kl_loss = 0
         with torch.no_grad():
 
             for batch in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
@@ -90,33 +121,49 @@ def train_model(
                 key_padding_mask = batch['attention_mask'].to(device)
                 text_desc = batch['text_desc']
 
-                token_map = model.vae.encode_obj_tokens(obj_tokens, padding_mask=key_padding_mask)
-                key_padding_mask = F.pad(key_padding_mask, (1, 0), value=False)
+                out = model(x = obj_tokens, x_key_padding_mask = key_padding_mask, room_mask_c = room_shape, text_c = text_desc)
 
-                residual_fm_gt_list = t_sequentializer.generate_residual_fm_gt(token_map, padding_mask=key_padding_mask)
-                x_wo_first, mask_gt = t_sequentializer.generate_sar_input(residual_fm_gt_list, padding_mask=key_padding_mask)
-                residual_fm_gt = torch.cat(residual_fm_gt_list, dim =1)
+                x_pred =  out['x_pred']
+                x_target = obj_tokens
+                recon_loss,_ = criterion(x_pred, x_target,key_padding_mask)
+                kl_loss = kl_divergence(
+                    out["mu_q"], out["logvar_q"],
+                    out["mu_p"], out["logvar_p"]
+                ).mean()
 
-                x_pred, mask_pred = model(x_wo_first,text_desc, room_shape, key_padding_mask=mask_gt)
-                loss, loss_dict = criterion(x_pred, mask_pred, residual_fm_gt, mask_gt)
+                stop_pred = out['stop_prob']
+                stop_gt = out['stop_gt']
+
+                raw_stop_loss = F.binary_cross_entropy(stop_pred, stop_gt, reduction='none').squeeze(-1)
+                valid_mask = (~key_padding_mask).float()
+                raw_stop_loss = raw_stop_loss * valid_mask
+                stop_loss = raw_stop_loss.sum() / valid_mask.sum().clamp(min=1)
+
+                loss = recon_loss + stop_loss + beta*kl_loss
                 val_loss += loss.item()
-                val_ar_loss += loss_dict['loss_x'].item()
-                val_mask_loss += loss_dict['loss_mask'].item()
+                val_recon_loss += recon_loss.item()
+                val_stop_loss += stop_loss.item()
+                val_kl_loss += kl_loss.item()
+
+
 
         avg_val_loss = val_loss / len(val_loader)
-        avg_val_ar_loss = val_ar_loss/len(val_loader)
-        avg_val_mask_loss = val_mask_loss/len(val_loader)
+        avg_val_recon_loss = val_recon_loss/len(val_loader)
+        avg_val_stop_loss = val_stop_loss/len(val_loader)
+        avg_val_kl_loss = val_kl_loss/len(val_loader)
         val_loss_recorder.append(avg_val_loss)
-        print(f"Epoch {epoch+1}/{num_epochs} -  Val Loss =  {avg_val_loss:.4f};  AutoRegressive Loss =  {avg_val_ar_loss:.4f}; Mask Loss = {avg_val_mask_loss:.4f}")
+        print(f"Epoch {epoch+1}/{num_epochs} -  Val Loss =  {avg_val_loss:.4f};\n  Reconstruction Loss =  {avg_val_recon_loss:.4f};\n Stop Token Loss = {avg_val_stop_loss:.4f}; \n KL Loss = {avg_val_kl_loss}")
 
         if use_wandb:
             wandb.log({
                 'train/total loss': avg_train_loss,
-                'train/ar loss': avg_train_ar_loss,
-                'train/mask loss': avg_train_mask_loss,
+                'train/recon loss': avg_train_recon_loss,
+                'train/stop loss': avg_train_stop_loss,
+                'train/kl loss' : avg_train_kl_loss,
                 'val/total': avg_val_loss,
-                'val/ar loss': avg_val_ar_loss,
-                'val/mask loss': avg_val_mask_loss
+                'val/recon loss': avg_val_recon_loss,
+                'val/stop loss': avg_val_stop_loss,
+                'val/kl loss' : avg_val_kl_loss
             })
 
         if avg_val_loss < best_val_loss:
@@ -149,34 +196,22 @@ if __name__ == "__main__":
 
     model_config = config['model']
     model_type = model_config.get("type")
-    if model_type not in ['sar']:
+    if model_type not in ['rcvae']:
         raise ValueError(f"Unsupported model type: {model_type}")
 
-    sar_depth = int(model_config.get('depth', 8))
-    sar_heads = int(model_config.get('heads', 8))
-    mlp_ratio = float(model_config.get('mlp_ratio', 4.0))
-    drop_rate = float(model_config.get('drop_rate', 0.1))
-    attn_drop_rate = float(model_config.get('attn_drop_rate', 0.1))
-    drop_path_rate = float(model_config.get('drop_path_rate', 0.1))
-    shared_aln = model_config.get('shared_aln', False)
-    norm_eps = float(model_config.get('norm_eps', 1e-6))
-    attn_l2_norm = model_config.get('attn_l2_norm', False)
-    use_prior_cluster = model_config.get('use_prior_cluster', False)
-
-    # --------------------- encoder -----------------------
-    encoder_config = model_config.get('encoder')
-
-    ENCODER_DEPTH = int(encoder_config.get('encoder_depth', 4))
-    DECODER_DEPTH = int(encoder_config.get('decoder_depth', 4))
-    HEADS = int(encoder_config.get('num_heads', 4))
-    NUM_EMBEDDINGS =  int(encoder_config.get('num_embeddings', 512))
-    TOKEN_DIM  = int(encoder_config.get('token_dim', 64))
-    encoder_pretrained_path = encoder_config.get('pretrained_path', None)
-
+    dim = int(model_config.get('dim',32))
+    z_dim = int(model_config.get('z_dim',64))
+    encoder_depth = int(model_config.get('encoder_depth',4))
+    encoder_heads = int(model_config.get('encoder_heads',8))
+    prior_depth = int(model_config.get('prior_depth',4))
+    prior_heads = int(model_config.get('prior_heads',8))
+    decoder_depth = int(model_config.get('decoder_depth',4))
+    decoder_heads = int(model_config.get('decoder_heads',8))
+    
     # --------------------- save -----------------------
 
     save_config = config.get('save', {})
-    save_folder = save_config.get('save_folder',"./pretrained/sceneautoregressive/")
+    save_folder = save_config.get('save_folder',"./pretrained/rcvae/")
     os.makedirs(save_folder,exist_ok=True)
 
     with open(os.path.join(save_folder, 'config.yaml'), "w", encoding="utf-8") as f:
@@ -213,24 +248,20 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
 
-    ae_encoder = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, test_mode=True, configs=config).to(device)
-    ae_encoder.load_state_dict(torch.load(f'{encoder_pretrained_path}', map_location=device))
-    
+   
     feat_extractor = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1).to(device)
     feat_extractor.fc = nn.Identity()  # 去掉最后的分类层
     
-    sar = RoomLayoutAutoRegressiveNet(
-        vae_local=ae_encoder, feature_extractor=feat_extractor,config=config, device=device,
-        depth = sar_depth, embed_dim=TOKEN_DIM, num_heads=sar_heads, mlp_ratio=mlp_ratio,
-        drop_rate = drop_rate, attn_drop_rate=attn_drop_rate, drop_path_rate=drop_path_rate,
-        shared_aln=shared_aln, norm_eps=norm_eps, attn_l2_norm=attn_l2_norm,
-        use_prior_cluster=use_prior_cluster
+    rcvae = RCVAE(
+        feat_extractor, config, device, dim, z_dim,
+        encoder_depth = encoder_depth, encoder_heads = encoder_heads, prior_depth = prior_depth, prior_heads = prior_heads,
+        decoder_depth = decoder_depth, decoder_heads = decoder_heads  
     ).to(device)
 
-    ar_loss = AutoregressiveTokenLoss(config=config)
+    ar_loss = ObjTokenReconstructionLoss(configs=dataset_config)
     
     train_model(
-        model=sar,
+        model=rcvae,
         train_loader=train_loader,
         val_loader = val_loader,
         device=device,

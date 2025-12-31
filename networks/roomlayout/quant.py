@@ -90,8 +90,7 @@ class TokenSequentializer(nn.Module):
             f_rest = (f_rest - f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)  # B x N x D
             f_hat = (f_hat + f_resi).masked_fill(mask_cat.unsqueeze(-1), 0.0)
 
-            
-        
+
             return f_hat
             
     

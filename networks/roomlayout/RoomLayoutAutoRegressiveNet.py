@@ -204,7 +204,7 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
             # print(x.shape)
             for b in self.blocks:
                 x = b(x=x, cond_BD = room_condition, cond_cross = text_condition_cross, self_key_padding_mask = None, attn_bias = None, cross_kv_padding_mask = kv_padding_mask)
-            
+            print(f"stage {si} :", x[0, :self.t_scales[si]]) if si == 0 else None
             h_BLC = x
             f_hat, next_token_map = self.vae_token_sequentializer.get_next_autoregressive_input(si, len(self.t_scales), f_hat, h_BLC )
             pred_mask_logits = self.proj_mask(x)
@@ -214,7 +214,7 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
         for b in self.blocks:
             b.enable_kv_cache(False)
 
-        pred_mask = pred_mask_logits.argmax(dim=2).bool()[:,1:]
+        pred_mask = pred_mask_logits.argmax(dim=2).bool()[:,-self.padded_length:]
         # print(f_hat.shape)
         # print(pred_mask)
 

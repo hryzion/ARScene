@@ -1,0 +1,29 @@
+dataset:
+  use_objlat: False
+  attr_dim: 52
+  padded_length: 32
+
+super_parameters:
+  epochs: 500
+  batch_size: 64
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  cuda: 0
+
+save:
+  save_folder: ./pretrained/rcvae/exp0
+
+
+model: 
+  type: rcvae
+  dim: 32
+  z_dim: 128
+  encoder_depth: 4
+  encoder_heads: 8
+  prior_depth: 4
+  prior_heads: 8
+  decoder_depth: 4
+  decoder_heads: 8
+
+loss:
+  beta: 0.25
