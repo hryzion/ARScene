@@ -31,6 +31,19 @@ def preprocess_3d_front(target_dir=TARGET_DIR, use_objlat = True, get_stats=Fals
         rooms = divide_scene_json_to_rooms(scene_json)
         bad_room_scene = []
         for idx, room in enumerate(rooms):
+            room_type = room['roomTypes'][0]
+            if filter_fn =="bedroom":
+                if not ('Bedroom' in room_type or 'Kids' in room_type or 'Elder' in room_type or 'Nanny' in room_type):
+                    continue
+            elif filter_fn =='livingroom':
+                if not ('Living' in room_type):
+                    continue
+            elif filter_fn == 'library':
+                if not ('Library' in room_type):
+                    continue
+            elif filter_fn == 'diningroom':
+                if not('Dining' in room_type):
+                    continue
             if scene_origin in bad_rooms.keys() and room['roomId'] in bad_rooms[scene_origin]:
                 continue
             if get_stats:
@@ -66,7 +79,7 @@ def preprocess_3d_front(target_dir=TARGET_DIR, use_objlat = True, get_stats=Fals
                 # Save or process the room_matrix as needed
                 # For example, save to a file or database
                 # Here we just print the room matrix for demonstration
-
+                
 
                 
                 # 7 : 2 : 1 train, test, val split
