@@ -103,25 +103,14 @@ class TokenSequentializer(nn.Module):
                 )  # (B*L, V)
 
                 idx_N = torch.argmin(dist, dim=1)
-                # f_down = F.normalize(f_down, dim=-1)
-
-
-                # idx_N = torch.argmax(f_down @ F.normalize(self.embedding.weight.T, dim=0), dim=1)  # n = B x token_len
-
                 if self.training:
                     self._ema_update(f_down, idx_N)
 
                 hit_V = idx_N.bincount(minlength=self.vocab_size).float()  # vocab_size ## not user yet
-                
                 idx_BL = idx_N.view(B, token_len)  # B x token_len
                 f_down_hat = self.embedding(idx_BL)  # B x token_len x D
 
-                # self.console_log_distribution(f_down_hat, after_cluster=True)
-
                 f_up = self.up_resampler(f_down_hat, M=N) if stage_i < SN else f_down_hat  # B x N x D
-                # f_down = F.interpolate(f_rest.transpose(1,2), size=token_len, mode = 'linear', align_corners=True).transpose(1,2)  # B x token_len x D
-                # f_up = F.interpolate(f_down.transpose(1,2), size=N, mode = 'linear', align_corners=True).transpose(1,2)  # B x N x D
-
                 phi = self.seq_resi[stage_i/(SN-1)]
                 
                 f_resi = phi(f_up).masked_fill(mask_cat.unsqueeze(-1), 0.0)
@@ -135,8 +124,6 @@ class TokenSequentializer(nn.Module):
             
             mean_vq_loss = mean_vq_loss / (SN + 1)
             f_hat = (f_hat.data-f_no_grad).add_(feature_map)  # straight-through trick
-
-            
         
             return f_hat, mean_vq_loss, vocab_hit_V
             

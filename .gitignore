@@ -1,4 +1,6 @@
-datasets/processed
+datasets/processed*
+datasets/atiss*
+datasets/figures*
 *.pth
 __pycache__
 datasets/models
