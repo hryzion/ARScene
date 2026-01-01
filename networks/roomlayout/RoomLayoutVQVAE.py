@@ -51,12 +51,12 @@ class VectorQuantizer(nn.Module):
         return z_q, loss, indices.view(z.shape[0], z.shape[1])
 
 class SceneLayoutTokenEncoder(nn.Module):
-    def __init__(self, token_dim = 64, depth=4, heads=4 ,attr_dim =116):
+    def __init__(self, token_dim = 64, depth=4, heads=4 ,attr_dim =116, num_bottleneck = 8):
         super().__init__()
         # root
         self.token_dim = token_dim
-        self.root_token = nn.Parameter(torch.randn(1, 1, token_dim))  # [1, 1, D]
-
+        self.abstract_token = nn.Parameter(torch.randn(1, num_bottleneck, token_dim))  # [1, 1, D]
+        self.num_bottleneck = num_bottleneck
         # embedding
         self.input_proj = nn.Linear(attr_dim, token_dim)
         
@@ -68,25 +68,39 @@ class SceneLayoutTokenEncoder(nn.Module):
         B, N, D = x.shape
         
         # Add root token
-        root = self.root_token.expand(B, 1, D)  # [B, 1, D]
+        abstract_embed = self.abstract_token.expand(B, self.num_bottleneck, D)  # [B, 1, D]
         
-        x_cat = torch.cat([root, x], dim=1)     # [B, N+1, D]
+        x_cat = torch.cat([abstract_embed, x], dim=1)     # [B, N+A, D]
 
         # Extend mask for root token (not masked)
-        mask_cat = F.pad(padding_mask, (1, 0), value=False)  # [B, N+1]
-        z = self.encoder(x_cat, key_padding_mask=mask_cat)  # [B, N+1, D]
-        return z
+        cls_mask = torch.zeros(B,self.num_bottleneck, device=padding_mask.device, dtype=torch.bool)
+        mask_cat = torch.cat([cls_mask, padding_mask], dim=1)
+
+        # extract information
+        z = self.encoder(x_cat, key_padding_mask=mask_cat)  # [B, N+A, D]
+        abstract = z[:,:self.num_bottleneck]
+        return abstract
     
 class SceneLayoutTokenDecoder(nn.Module):
-    def __init__(self, token_dim=64, depth=4, heads=4,attr_dim = 116):
+    def __init__(self, token_dim=64, depth=4, heads=4, attr_dim = 116, num_recon = 20):
         super().__init__()
         self.decoder = TransformerBlock(token_dim, depth, heads)
         self.output_proj = nn.Linear(token_dim, attr_dim)
+        self.mask_proj = nn.Linear(token_dim, 2)
+        self.recon_token = nn.Parameter(torch.randn(1, num_recon, token_dim))  # N
+        self.num_recon = num_recon
 
-    def forward(self, z_q, padding_mask = None):  # z_q: [B, N+1, D]
-        mask_cat = F.pad(padding_mask, (1, 0), value=False)  # [B, N+1]
-        x = self.decoder(z_q, key_padding_mask=mask_cat)
-        return self.output_proj(x)  # [B, N+1, D]
+
+
+    def forward(self, z_q):  # z_q: [B, A, D]  # all valid; no mask
+        B, A, D = z_q.shape
+        recon_embed = self.recon_token.expand(B, self.num_recon, D)
+        z_cat = torch.cat([recon_embed, z_q], dim=1)
+
+        x = self.decoder(z_cat, key_padding_mask=None) # [B, N+A, D]
+        recon_x = x[:, :self.num_recon]
+
+        return self.output_proj(recon_x) ,self.mask_proj(recon_x) # [B, N, D]
         
 
 
@@ -102,7 +116,7 @@ class RoomLayoutVQVAE(nn.Module):
         self.encoder = SceneLayoutTokenEncoder(token_dim, depth=enc_depth, heads=heads,attr_dim=attr_dim)
         self.quantizer = VectorQuantizer(num_embeddings, token_dim)
 
-        self.token_sequentializer = TokenSequentializer(embed_dim=token_dim, resi_ratio=0.5, share_phi=1, use_prior_cluster=False)
+        self.token_sequentializer = TokenSequentializer(embed_dim=token_dim, vocab_size=num_embeddings, resi_ratio=0.5, share_phi=1, ema_decay=float(configs['model']['quant']['ema_decay']), use_prior_cluster=False)
         self.decoder = SceneLayoutTokenDecoder(token_dim, depth=dec_depth, heads=heads,attr_dim=attr_dim)
         self.configs = configs
         if self.test_mode:
@@ -111,6 +125,7 @@ class RoomLayoutVQVAE(nn.Module):
 
     def forward(self, x, padding_mask=None):  # x: [B, N, D], mask: [B, N]
         z = self.encoder(x, padding_mask=padding_mask) # B, N+1, D
+
         if self.configs['model']['bottleneck'] == 'ae':
             z_q = z
             vq_loss = torch.tensor(0.0, device=z.device)
@@ -118,16 +133,14 @@ class RoomLayoutVQVAE(nn.Module):
         elif self.configs['model']['bottleneck'] == 'vqvae':
             z_q, vq_loss, indices = self.quantizer(z) # B, N+1, D   
         elif self.configs['model']['bottleneck'] == 'residual-vae':
-            z_q = self.token_sequentializer(z, padding_mask=padding_mask)
-            vq_loss = torch.tensor(0.0, device=z.device)
-            indices = None
+            z_q, vq_loss, vocab_hits = self.token_sequentializer(z)
+            indices = vocab_hits
         else:
             raise NotImplementedError(f"Unknown bottleneck type: {self.configs['model']['bottleneck']}")
 
-        x = self.decoder(z_q, padding_mask=padding_mask) 
-        root = x[:, :1, :]    # B, 1, D
-        recon = x[:, 1:, :]   # B, N, D
-        return root, recon, vq_loss, indices
+        recon = self.decoder(z_q) 
+
+        return 1, recon, vq_loss, indices
     
     def encode_obj_tokens(self,x, padding_mask=None):
         z = self.encoder(x, padding_mask=padding_mask) # B, N+1, D

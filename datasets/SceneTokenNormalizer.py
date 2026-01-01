@@ -12,7 +12,7 @@ class SceneTokenNormalizer:
         """
         self.category_dim = category_dim
         self.obj_dim = obj_feat if use_objlat else 0
-        self.origin_dim = category_dim + 15 + obj_feat if not atiss else category_dim + 7  # 原始维度
+        self.origin_dim = category_dim + 10 + obj_feat if not atiss else category_dim + 7  # 原始维度
         
         self.rotation_mode = rotation_mode
         
@@ -20,18 +20,16 @@ class SceneTokenNormalizer:
         self.stats = {}
 
         self.slices = {
-            'bbox_max': slice(self.category_dim, self.category_dim + 3),
-            'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
-            'translate': slice(self.category_dim + 6, self.category_dim + 9),
-            'rotation': slice(self.category_dim + 9, self.category_dim + 12),
-            'scale': slice(self.category_dim + 12, self.category_dim+15),
-            'latent': slice(self.category_dim + 15, self.origin_dim)
+            'translate': slice(self.category_dim, self.category_dim + 3),
+            'size': slice(self.category_dim + 3, self.category_dim + 6),
+            'rotation': slice(self.category_dim + 6, self.category_dim + 7),
+            'scale': slice(self.category_dim + 7, self.category_dim+10),
+            'latent': slice(self.category_dim + 10, self.origin_dim)
         } if self.use_objlat else {
-            'bbox_max': slice(self.category_dim, self.category_dim + 3),
-            'bbox_min': slice(self.category_dim + 3, self.category_dim + 6),
-            'translate': slice(self.category_dim + 6, self.category_dim + 9),
-            'rotation': slice(self.category_dim + 9, self.category_dim + 12),
-            'scale': slice(self.category_dim + 12, self.category_dim+15),
+            'translate': slice(self.category_dim, self.category_dim + 3),
+            'size': slice(self.category_dim + 3, self.category_dim + 6),
+            'rotation': slice(self.category_dim + 6, self.category_dim + 7),
+            'scale': slice(self.category_dim + 7, self.category_dim+10),
         }
 
         if atiss:
@@ -99,8 +97,8 @@ class SceneTokenNormalizer:
             rot = obj_tokens[:, slices['rotation']]
             sin = torch.sin(rot)
             cos = torch.cos(rot)
-            rot_repr = torch.cat([sin, cos], dim=-1)  # [N, 6]
-            normalized = torch.cat([normalized, rot_repr], dim=-1) # [B*N, D+6] the dimension has increased by 6 !!
+            rot_repr = torch.cat([sin, cos], dim=-1)  # [N, 2]
+            normalized = torch.cat([normalized, rot_repr], dim=-1) # [B*N, D+6] the dimension has increased by 2 !!
 
         if len(original_shape) == 3:
             new_D = normalized.size(1)
@@ -126,10 +124,10 @@ class SceneTokenNormalizer:
 
         if include_rotation and self.rotation_mode == 'sincos':
             # 从 sincos 还原欧拉角
-            start = obj_tokens.size(1) - 6
+            start = obj_tokens.size(1) - 2
             sincos = obj_tokens[:, start:]  # [N, 6]
-            sin_vals = sincos[:, :3]
-            cos_vals = sincos[:, 3:]
+            sin_vals = sincos[:, :1]
+            cos_vals = sincos[:, 1:]
             rot = torch.atan2(sin_vals, cos_vals)  # [-pi, pi]
             denorm[:, slices['rotation']] = rot
 

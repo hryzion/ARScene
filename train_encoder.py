@@ -39,6 +39,7 @@ def train_model(
         train_loss = 0
         train_vq_loss = 0
         train_recon_loss = 0
+        train_vq_vocab_hits = torch.zeros(model.token_sequentializer.vocab_size, device=device)
 
 
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]"):
@@ -49,13 +50,15 @@ def train_model(
             attention_mask = batch['attention_mask'].to(device)
 
             optimizer.zero_grad()
-            root, recon, vq_loss, _ = model(obj_tokens, padding_mask=attention_mask)
+            root, recon, vq_loss, vocab_hits = model(obj_tokens, padding_mask=attention_mask)
             recon_loss, bond_losses = criterion(recon, obj_tokens, attention_mask)
 
             loss = recon_loss + beta * vq_loss
             loss.backward()
             optimizer.step()
 
+
+            train_vq_vocab_hits += vocab_hits
             train_loss += loss.item()
             train_vq_loss += vq_loss.item()
             train_recon_loss += recon_loss.item()
@@ -64,6 +67,9 @@ def train_model(
         avg_train_vq = train_vq_loss / len(train_loader)
         avg_train_recon = train_recon_loss / len(train_loader)
         train_loss_recoder.append(avg_train_loss)
+
+        train_used_codes = (train_vq_vocab_hits > 0).sum().item()
+        train_usage_rate = train_used_codes / model.token_sequentializer.vocab_size
 
         print(f"[Train] Epoch {epoch+1}: Loss={avg_train_loss:.4f}, Recon={avg_train_recon:.4f}, VQ={avg_train_vq:.4f}")
         if configs['model']['bottleneck'] == 'vqvae':
@@ -74,6 +80,7 @@ def train_model(
         val_loss = 0
         val_vq_loss = 0
         val_recon_loss = 0
+        val_vq_vocab_hits = torch.zeros(model.token_sequentializer.vocab_size, device=device)
 
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
@@ -81,10 +88,7 @@ def train_model(
                 room_shape = batch['room_shape'].to(device)
                 obj_tokens = batch['obj_tokens'].to(device) # [B, maxN, T]
                 attention_mask = batch['attention_mask'].to(device)
-
-                
-
-                root, recon, vq_loss, _ = model(obj_tokens, padding_mask=attention_mask)
+                root, recon, vq_loss, vocab_hits = model(obj_tokens, padding_mask=attention_mask)
                 recon_loss, bond_losses = criterion(recon, obj_tokens, attention_mask)
 
                 loss = recon_loss + beta * vq_loss
@@ -92,15 +96,24 @@ def train_model(
                 val_loss += loss.item()
                 val_vq_loss += vq_loss.item()
                 val_recon_loss += recon_loss.item()
+                val_vq_vocab_hits += vocab_hits
 
         avg_val_loss = val_loss / len(val_loader)
         avg_val_vq = val_vq_loss / len(val_loader)
         avg_val_recon = val_recon_loss / len(val_loader)
         val_loss_recoder.append(avg_val_loss)
+        val_used_codes = (val_vq_vocab_hits > 0).sum().item()
+        val_usage_rate = val_used_codes / model.token_sequentializer.vocab_size
         wandb.log({
-            'Train Loss': avg_train_recon,
-            'Val Loss': avg_val_recon,
-            'epoch': epoch+1
+            'Train/Loss': avg_train_loss,
+            'Train/Recon' : avg_train_recon,
+            'Train/VQ Loss': avg_train_vq,
+            'Train/VQ Usage': train_usage_rate,
+            'Val/Loss': avg_val_loss,
+            'Val/Recon': avg_val_recon,
+            'Val/VQ Loss':avg_val_vq,
+            'Val/VQ Usage':val_usage_rate
+
         })
         print(f"[Val] Epoch {epoch+1}: Loss={avg_val_loss:.4f}, Recon={avg_val_recon:.4f}, VQ={avg_val_vq:.4f}")
         if configs['model']['bottleneck'] == 'vqvae':

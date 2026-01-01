@@ -1,0 +1,28 @@
+model:
+  type: ResidualVQAutoEncoder
+  token_dim: 64
+  encoder_depth: 8
+  decoder_depth: 8
+  num_heads: 8
+  num_embeddings: 4096
+  bottleneck : residual-vae
+  quant:
+    vq_beta: 1
+    ema_decay: 0.95
+
+super_parameters:
+  epochs: 2000
+  batch_size: 512
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  cuda: 0
+
+dataset:
+  filter_fn: bedroom
+  dataset_dir: ./dataset/processed_bedroom
+  use_objlat: true
+  attr_dim: 116
+  padded_length: 32
+
+save:
+  save_folder: ./pretrained/vqvae/exp0

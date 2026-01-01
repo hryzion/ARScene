@@ -368,7 +368,7 @@ def embed_obj_token(obj, use_objlat=True,atiss=False):
     else:
         latent = None
 
-    cs = np.zeros(len(THREED_FRONT_CATEGORY)+2, dtype=np.float32)
+    cs = np.zeros(len(THREED_FRONT_CATEGORY), dtype=np.float32) if not atiss else np.zeros(len(THREED_FRONT_CATEGORY)+2, dtype=np.float32)
     # print(obj['coarseSemantic'])
     cid = THREED_FRONT_CATEGORY.index(THREED_FRONT_FURNITURE[obj['coarseSemantic']])
     cs[cid] = 1.0
@@ -376,32 +376,34 @@ def embed_obj_token(obj, use_objlat=True,atiss=False):
     bbox_max = np.array(obj['bbox']['max'])
     bbox_min = np.array(obj['bbox']['min'])
     translate = np.array(obj['translate'])
-    rotation = np.array(obj['rotate'])
+    rotation = np.array(obj['orientation'])
     scale = np.array(obj['scale'])
     size = abs(bbox_max-bbox_min)
     
     
     if atiss:
         return np.concatenate((
-            cs, translate, size, rotation[1:2]
+            cs, translate, size, rotation
         ))
 
     return np.concatenate((
-        cs, bbox_max, bbox_min, translate, rotation, scale, latent 
+        cs, translate, size, rotation, scale, latent 
     )) if use_objlat else np.concatenate((
-        cs, bbox_max, bbox_min, translate, rotation, scale
+        cs, translate, size, rotation, scale
     ))
 
 
 def decode_obj_token(obj_token, use_objlat = True):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
     cs = obj_token[:len(THREED_FRONT_CATEGORY)]
-    bbox_max = obj_token[len(THREED_FRONT_CATEGORY):len(THREED_FRONT_CATEGORY) + 3]
-    bbox_min = obj_token[len(THREED_FRONT_CATEGORY) + 3:len(THREED_FRONT_CATEGORY) + 6]
-    translate = obj_token[len(THREED_FRONT_CATEGORY) + 6:len(THREED_FRONT_CATEGORY) + 9]
-    rotation = obj_token[len(THREED_FRONT_CATEGORY) + 9:len(THREED_FRONT_CATEGORY) + 12]
-    scale = obj_token[len(THREED_FRONT_CATEGORY) + 12:len(THREED_FRONT_CATEGORY)+15]
-    latent = obj_token[len(THREED_FRONT_CATEGORY)+15:]
+    translate = obj_token[len(THREED_FRONT_CATEGORY):len(THREED_FRONT_CATEGORY) + 3]
+    size = obj_token[len(THREED_FRONT_CATEGORY) + 3:len(THREED_FRONT_CATEGORY) + 6]
+    rotation = obj_token[len(THREED_FRONT_CATEGORY) + 6:len(THREED_FRONT_CATEGORY) + 7]
+    scale = obj_token[len(THREED_FRONT_CATEGORY) + 7: len(THREED_FRONT_CATEGORY) + 10]
+    latent = obj_token[len(THREED_FRONT_CATEGORY)+10:]
+
+    bbox_max = translate+size/2
+    bbox_min = translate-size/2
 
     coarse_semantic = THREED_FRONT_CATEGORY[np.argmax(cs)]
     q_size =  abs(bbox_max - bbox_min)
