@@ -11,10 +11,11 @@ class TokenSequentializer(nn.Module):
     '''
     def __init__(self,
         embed_dim = 128, vocab_size = 512, beta = 0.25, ema_decay = 0.99, eps = 1e-5,
+        use_codebook = True,
         resi_ratio = 0.5,
         share_phi = 1,  # 0: non-shared, 1: shared, 2: partially-shared 
         use_prior_cluster = False, using_znorm = False, training = True,
-        t_scales = [1, 2, 3, 4, 5, 8]   # + N (last scale is the full resolution)
+        t_scales = [25] #[1, 2, 3, 4, 5, 8, 11, 13 ,16, 25]   # + N (last scale is the full resolution)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -50,6 +51,7 @@ class TokenSequentializer(nn.Module):
         self.eps = eps
 
         self.training = training
+        self.use_codebook = use_codebook
 
         if self.use_prior_cluster:
             # TODO: prior cluster info inject there, explicitly
@@ -72,13 +74,15 @@ class TokenSequentializer(nn.Module):
         [input]
             feature_map: B x N x D with padding
         '''
-    
+        if not self.use_codebook:
+            return feature_map, torch.tensor(0.0, device=feature_map.device), torch.zeros(self.vocab_size, dtype=torch.float, device=feature_map.device)
 
         B, N, D = feature_map.shape
         f_no_grad = feature_map.detach()
         f_rest = f_no_grad.clone()
         f_hat = torch.zeros_like(f_rest)
 
+        
 
         if self.use_prior_cluster:
             raise NotImplementedError
@@ -110,9 +114,9 @@ class TokenSequentializer(nn.Module):
                 f_down_hat = self.embedding(idx_BL)  # B x token_len x D
 
                 f_up = self.up_resampler(f_down_hat, M=N) if stage_i < SN-1 else f_down_hat  # B x N x D; the last stage need not up sample
-                phi = self.seq_resi[stage_i/(SN-1)]
+                phi = self.seq_resi[stage_i/(SN-1)] if SN!=1 else nn.Identity()
                 
-                f_resi = phi(f_up)
+                f_resi = phi(f_up) if SN != 1 else f_up
                 f_rest = (f_rest - f_resi)        # B x N x D
                 f_hat = (f_hat + f_resi)
 

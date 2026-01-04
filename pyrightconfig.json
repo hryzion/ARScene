@@ -4,6 +4,6 @@
     ],
 
     "exclude": [
-        "ChanferDistancePytorch"
+        "ChamferDistancePytorch"
     ]
 }

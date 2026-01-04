@@ -64,7 +64,7 @@ class ThreeDFrontDataset(Dataset):
             'room_type': room_type,
             'room_shape': room_shape,
             'obj_tokens': obj_tokens,
-            'text_desc': str(data['desc'])
+            'text_desc': str(data['description'])
         }
 
 

@@ -8,11 +8,9 @@ class ObjTokenReconstructionLoss(nn.Module):
         self.num_categories = num_categories
         self.weights = weights or {
             'cs': 1.0,
-            'bbox_max': 1.0,
-            'bbox_min': 1.0,
-            'translate': 1.0,
+            'translate': 10.0,
+            'size':10.0,
             'rotation': 1.0,
-            'scale': 1.0,
             'latent':1.0
         }
 
@@ -20,7 +18,7 @@ class ObjTokenReconstructionLoss(nn.Module):
         self.mse_loss = nn.MSELoss(reduction='none')  # 用 none 自己处理 mask
 
 
-    def forward(self, pred, target, attention_mask):
+    def forward(self, pred, target, attention_mask, mask_logit):
         """
         pred, target: [B, N, D]
         attention_mask: [B, N] (True=padding, False=有效token)
@@ -30,6 +28,17 @@ class ObjTokenReconstructionLoss(nn.Module):
         mask = (~attention_mask).float()  # [B, N]
         valid_tokens = mask.sum()
 
+
+
+        # mask loss
+        mask_gt = attention_mask.float().unsqueeze(-1)
+
+        loss_mask = F.binary_cross_entropy_with_logits(
+            mask_logit,
+            mask_gt
+        )
+
+        # recon loss
         # print(pred.shape, valid_tokens)
 
         # === 拆分各部分 ===
@@ -37,40 +46,29 @@ class ObjTokenReconstructionLoss(nn.Module):
         cs_target = target[:, :, :self.num_categories]
 
         start = self.num_categories
-        bbox_max_pred = pred[:, :, start:start+3]
-        bbox_max_target = target[:, :, start:start+3]
-
-        start += 3
-        bbox_min_pred = pred[:, :, start:start+3]
-        bbox_min_target = target[:, :, start:start+3]
-
-        start += 3
         translate_pred = pred[:, :, start:start+3]
         translate_target = target[:, :, start:start+3]
 
         start += 3
-        rotation_pred = pred[:, :, start:start+3]
-        rotation_target = target[:, :, start:start+3]
+        size_pred = pred[:,:,start:start+3]
+        size_target = target[:,:,start:start+3]
+
 
         start += 3
-        scale_pred = pred[:, :, start:start+3]
-        scale_target = target[:, :, start:start+3]
+        rotation_pred = pred[:, :, start:start+1]
+        rotation_target = target[:, :, start:start+1]
+
+
 
         if self.use_objlat:
-            start += 3
+            start += 1
             latent_pred = pred[:, :, start:start + 64]
             latent_target = target[:, :, start:start + 64]
 
-            start += 64
-            rotation_pred = pred[:, :, start:start+6]
-            rotation_target = target[:, :, start:start+6]
+            # start += 64
+            # rotation_pred = pred[:, :, start:start+2]
+            # rotation_target = target[:, :, start:start+2]
         
-        else:
-            start += 3
-            rotation_pred = pred[:, :, start:start+6]
-            rotation_target = target[:, :, start:start+6]
-        
-
         # === 计算各部分损失（带 mask）===
 
         # --- 1. cs 使用 CrossEntropyLoss ---
@@ -87,10 +85,11 @@ class ObjTokenReconstructionLoss(nn.Module):
         # --- 2. bbox、translate、scale 用 MSE ---
         # print(self.mse_loss(bbox_max_pred, bbox_max_target)[0,1])
         # print(bbox_max_pred[0,1], bbox_max_target[0,1])
-        loss_bbox_max = (self.mse_loss(bbox_max_pred, bbox_max_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
-        loss_bbox_min = (self.mse_loss(bbox_min_pred, bbox_min_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
+
+
+        
         loss_translate = (self.mse_loss(translate_pred, translate_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
-        loss_scale = (self.mse_loss(scale_pred, scale_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
+        loss_size = (self.mse_loss(size_pred, size_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
         loss_rotation = (self.mse_loss(rotation_pred, rotation_target).mean(dim = -1) *mask ).sum() / (valid_tokens + 1e-8)
         loss_latent = (self.mse_loss(latent_pred, latent_target).mean(dim = -1) *mask ).sum() / (valid_tokens + 1e-8) if self.use_objlat else 0
       
@@ -98,24 +97,21 @@ class ObjTokenReconstructionLoss(nn.Module):
         # === 加权求和 ===
         total_loss = \
             self.weights['cs'] * loss_cs + \
-            self.weights['bbox_max'] * loss_bbox_max + \
-            self.weights['bbox_min'] * loss_bbox_min + \
             self.weights['translate'] * loss_translate + \
+            self.weights['size'] * loss_size+\
             self.weights['rotation'] * loss_rotation + \
-            self.weights['scale'] * loss_scale + \
             self.weights['latent'] * loss_latent
-       
+
+        
         # 返回总损失and各部分损失
         # print(f"Total Loss: {total_loss.item():.4f}, loss_cs: {loss_cs.item():.4f}, loss_bbox_min: {loss_bbox_min.item():.4f}, loss_bbox_max: {loss_bbox_max.item():.4f}, loss_translate: {loss_translate.item():.4f}, loss_rotation: {loss_rotation.item():.4f}, loss_scale: {loss_scale.item():.4f}")
         return total_loss, {
             'cs': loss_cs.item(),
-            'bbox_max': loss_bbox_max.item(),
-            'bbox_min': loss_bbox_min.item(),
             'translate': loss_translate.item(),
+            'size': loss_size.item(),
             'rotation': loss_rotation.item(),
-            'scale': loss_scale.item(),
             'latent': loss_latent.item() if self.use_objlat else 0
-        }
+        }, loss_mask
 
 
 from scipy.optimize import linear_sum_assignment

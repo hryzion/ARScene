@@ -225,6 +225,14 @@ def check(name, x):
           torch.isinf(x).any().item(),
           x.abs().max().item())
 
+def check_grad_flow(model):
+    for name, p in model.named_parameters():
+        if p.requires_grad:
+            if p.grad is None:
+                print(f'[NO GRAD] {name}')
+            else:
+                print(f'[OK] {name} | mean={p.grad.abs().mean():.2e}')
+
 from collections import Counter, defaultdict
 import random
 
@@ -371,36 +379,39 @@ def embed_obj_token(obj, use_objlat=True,atiss=False):
     cs = np.zeros(len(THREED_FRONT_CATEGORY), dtype=np.float32) if not atiss else np.zeros(len(THREED_FRONT_CATEGORY)+2, dtype=np.float32)
     # print(obj['coarseSemantic'])
     cid = THREED_FRONT_CATEGORY.index(THREED_FRONT_FURNITURE[obj['coarseSemantic']])
+    # cs = np.array([cid])
+    
     cs[cid] = 1.0
 
     bbox_max = np.array(obj['bbox']['max'])
     bbox_min = np.array(obj['bbox']['min'])
     translate = np.array(obj['translate'])
-    rotation = np.array(obj['orientation'])
+    rotation = np.array([obj['orient']])
+ 
     scale = np.array(obj['scale'])
     size = abs(bbox_max-bbox_min)
     
     
     if atiss:
         return np.concatenate((
-            cs, translate, size, rotation
+            cs, translate, size, rotation 
         ))
 
     return np.concatenate((
-        cs, translate, size, rotation, scale, latent 
+        cs, translate, size, rotation, latent
     )) if use_objlat else np.concatenate((
-        cs, translate, size, rotation, scale
+        cs, translate, size, rotation
     ))
 
 
 def decode_obj_token(obj_token, use_objlat = True):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
+    # print(obj_token.shape)
     cs = obj_token[:len(THREED_FRONT_CATEGORY)]
     translate = obj_token[len(THREED_FRONT_CATEGORY):len(THREED_FRONT_CATEGORY) + 3]
     size = obj_token[len(THREED_FRONT_CATEGORY) + 3:len(THREED_FRONT_CATEGORY) + 6]
     rotation = obj_token[len(THREED_FRONT_CATEGORY) + 6:len(THREED_FRONT_CATEGORY) + 7]
-    scale = obj_token[len(THREED_FRONT_CATEGORY) + 7: len(THREED_FRONT_CATEGORY) + 10]
-    latent = obj_token[len(THREED_FRONT_CATEGORY)+10:]
+    latent = obj_token[len(THREED_FRONT_CATEGORY)+7:]
 
     bbox_max = translate+size/2
     bbox_min = translate-size/2
@@ -409,6 +420,7 @@ def decode_obj_token(obj_token, use_objlat = True):
     q_size =  abs(bbox_max - bbox_min)
     model_id = get_modelid_by_latent_and_size(latent, q_size, coarse_semantic) if use_objlat else get_modelid_by_size(q_size, coarse_semantic)
 
+    # print(rotation)
     return {
         'coarseSemantic': coarse_semantic,
         'bbox': {
@@ -416,8 +428,9 @@ def decode_obj_token(obj_token, use_objlat = True):
             'min': bbox_min.tolist()
         },
         'translate': translate.tolist(),
-        'rotate': rotation.tolist(),
-        'scale': scale.tolist(),
+        'rotate':[0,float(rotation[0]),0],
+        'orient': float(rotation[0]),
+        'scale': [1,1,1],
         'latent' : latent.tolist(),
         'modelId': model_id,
         'inDatabase': model_id is not None
@@ -470,8 +483,8 @@ def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask, use_objlat=Tru
     返回二维列表，忽略mask为False的token
     """
     B, N = batch_obj_tokens.shape[:2]
-    batch_obj_tokens = batch_obj_tokens.cpu().numpy()  # 方便用 numpy 解码
-    attention_mask = attention_mask.cpu().numpy()
+    batch_obj_tokens = batch_obj_tokens.detach().cpu().numpy()  # 方便用 numpy 解码
+    attention_mask = attention_mask.detach().cpu().numpy()
     
     decoded = []
     for b in range(B):
@@ -548,7 +561,7 @@ def pack_scene_json(decoded_data,room_name):
 
 
 
-def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = None):
+def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = None, batch_idx=0):
     """
     recon_data: List[List[obj_dict]]
     每个obj_dict形如:
@@ -674,7 +687,7 @@ def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = N
     plt.tight_layout()
     if save_dir is not None:
         os.makedirs(save_dir, exist_ok=True)
-        plt.savefig(f"{save_dir}/{room_name[0]}.png", bbox_inches='tight')
+        plt.savefig(f"{save_dir}/{batch_idx}_{room_name[0]}.png", bbox_inches='tight')
     plt.close(fig)
 
 def load_scene_json(scene_json_path):

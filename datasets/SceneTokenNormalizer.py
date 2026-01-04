@@ -23,13 +23,12 @@ class SceneTokenNormalizer:
             'translate': slice(self.category_dim, self.category_dim + 3),
             'size': slice(self.category_dim + 3, self.category_dim + 6),
             'rotation': slice(self.category_dim + 6, self.category_dim + 7),
-            'scale': slice(self.category_dim + 7, self.category_dim+10),
             'latent': slice(self.category_dim + 10, self.origin_dim)
         } if self.use_objlat else {
             'translate': slice(self.category_dim, self.category_dim + 3),
             'size': slice(self.category_dim + 3, self.category_dim + 6),
             'rotation': slice(self.category_dim + 6, self.category_dim + 7),
-            'scale': slice(self.category_dim + 7, self.category_dim+10),
+
         }
 
         if atiss:
@@ -162,6 +161,8 @@ class SceneTokenNormalizer:
             mask = ~mask                           # padding=True, valid=False
 
             for key, s in slices.items():
+                if key == 'latent':
+                    continue
                 vals = obj_tokens[:, :, s]         # [B, O, C]
                 valid = mask.unsqueeze(-1).expand_as(vals)
                 vals = vals[valid].view(-1, vals.size(-1))  # [N, C]
@@ -201,8 +202,15 @@ class SceneTokenNormalizer:
         slices =self.slices
         normalized = obj_tokens.clone()
         for key, s in slices.items():
+            if key == 'latent':
+                continue
             min_s, max_s = self.stats[key]['min'].to(obj_tokens.device), self.stats[key]['max'].to(obj_tokens.device)
             normalized[:, s] = self.normalize(normalized[:, s], min_s, max_s)
+        
+        if len(original_shape) == 3:
+            new_D = normalized.size(1)
+            normalized = normalized.view(B, N, new_D)
+
         return normalized
     
     def invert_transform_atiss(self, obj_tokens):
@@ -211,11 +219,18 @@ class SceneTokenNormalizer:
             B, N, D = original_shape
             obj_tokens = obj_tokens.view(-1, D)  # [B*N, D]
 
+        # print(obj_tokens.shape)
         slices = self.slices
         denorm = obj_tokens.clone()
         for key, s in slices.items():
+            if key =='latent':
+                continue
             min_s, max_s = self.stats[key]['min'].to(obj_tokens.device), self.stats[key]['max'].to(obj_tokens.device)
             denorm[:, s] = self.denormalize(denorm[:, s], min_s, max_s)
+        if len(original_shape) == 3:
+            new_D = denorm.size(1)
+            denorm = denorm.view(B, N, new_D)
+        
         return denorm
     
     def save_atiss(self, path):
