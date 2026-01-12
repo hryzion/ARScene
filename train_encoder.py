@@ -12,6 +12,7 @@ import os
 import wandb
 import matplotlib.pyplot as plt
 from utils import check_grad_flow
+import numpy as np
 
 def compute_perplexity_from_hits(vocab_hits, eps=1e-10):
     """
@@ -57,7 +58,7 @@ def train_model(
         train_vq_loss = 0
         train_recon_loss = 0
         train_mask_loss = 0
-        train_vq_vocab_hits = torch.zeros(model.token_sequentializer.vocab_size, device=device)
+        train_vq_vocab_hits = torch.zeros(model.token_sequentializer.num_codebooks,model.token_sequentializer.vocab_size, device=device)
 
 
         for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]"):
@@ -103,21 +104,24 @@ def train_model(
         avg_train_mask = train_mask_loss/len(train_loader)
         train_loss_recoder.append(avg_train_loss)
 
-        train_used_codes = (train_vq_vocab_hits > 0).sum().item()
-        train_usage_rate = train_used_codes / model.token_sequentializer.vocab_size
-        train_perplexity, train_probs = compute_perplexity_from_hits(train_vq_vocab_hits) if model.use_codebook else (0.0, None)
+        
+        train_used_codes, train_usage_rate, train_perplexity =_get_codebook_usage_stats(train_vq_vocab_hits) if model.use_codebook else (0,0,0)
+
         print(f"[Train] Epoch {epoch+1}: Loss={avg_train_loss:.4f}, Recon={avg_train_recon:.4f}, VQ={avg_train_vq:.4f}")
         if configs['model']['bottleneck'] == 'vqvae':
             print(f" VQ Usage Rate: {model.quantizer.last_usage_rate*100:.2f}%, Unique Codes: {len(model.quantizer.last_unique_codes) if model.quantizer.last_unique_codes is not None else 0}")
         elif configs['model']['bottleneck'] == 'residual-vae':
-            print(f" VQ Usage Rate: {train_usage_rate*100:.2f}%, perplexity={train_perplexity:.2f}, Unique Codes: {train_used_codes}/{model.token_sequentializer.vocab_size}")
+            # print(f" VQ Usage Rate: {train_usage_rate*100:.2f}%, perplexity={train_perplexity:.2f}, Unique Codes: {train_used_codes}/{model.token_sequentializer.vocab_size}")
+            
+            for k in range(len(train_used_codes)):
+                print(f"  Codebook {k}: Usage Rate: {train_usage_rate[k]*100:.2f}%, perplexity={train_perplexity[k]:.2f}, Unique Codes: {train_used_codes[k]}/{model.token_sequentializer.vocab_size}")
         # ----- VALIDATION -----
         model.eval()
         val_loss = 0
         val_vq_loss = 0
         val_recon_loss = 0
         val_mask_loss =0 
-        val_vq_vocab_hits = torch.zeros(model.token_sequentializer.vocab_size, device=device)
+        val_vq_vocab_hits = torch.zeros(model.token_sequentializer.num_codebooks, model.token_sequentializer.vocab_size, device=device)
 
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
@@ -141,30 +145,32 @@ def train_model(
         avg_val_recon = val_recon_loss / len(val_loader)
         avg_val_mask = val_mask_loss/len(val_loader)
         val_loss_recoder.append(avg_val_loss)
-        val_used_codes = (val_vq_vocab_hits > 0).sum().item()
-        val_usage_rate = val_used_codes / model.token_sequentializer.vocab_size
 
-        val_perplexity, val_probs = compute_perplexity_from_hits(val_vq_vocab_hits) if model.use_codebook else (0.0, None)
+        val_used_codes, val_usage_rate, val_perplexity = _get_codebook_usage_stats(val_vq_vocab_hits) if model.use_codebook else (0,0,0)
+
         if use_wandb:
             wandb.log({
                 'Train/Loss': avg_train_loss,
                 'Train/Recon' : avg_train_recon,
                 'Train/Mask' : avg_train_mask,
                 'Train/VQ Loss': avg_train_vq,
-                'Train/VQ Usage': train_usage_rate,
-                'Train/Perplexity': train_perplexity,
+                'Train/VQ Usage': train_usage_rate.mean(),
+                'Train/Perplexity': train_perplexity.mean(),
                 'Val/Loss': avg_val_loss,
                 'Val/Recon': avg_val_recon,
                 'Val/Mask' : avg_val_mask,
                 'Val/VQ Loss':avg_val_vq,
-                'Val/VQ Usage':val_usage_rate,
-                'Val/Perplexity':val_perplexity
+                'Val/VQ Usage':val_usage_rate.mean(),
+                'Val/Perplexity':val_perplexity.mean(),
             })
         print(f"[Val] Epoch {epoch+1}: Loss={avg_val_loss:.4f}, Recon={avg_val_recon:.4f}, VQ={avg_val_vq:.4f}")
         if configs['model']['bottleneck'] == 'vqvae':
             print(f" VQ Usage Rate: {model.quantizer.last_usage_rate*100:.2f}%, Unique Codes: {len(model.quantizer.last_unique_codes) if model.quantizer.last_unique_codes is not None else 0}")
         elif configs['model']['bottleneck'] == 'residual-vae':
-            print(f" VQ Usage Rate: {val_usage_rate*100:.2f}%, perplexity={val_perplexity:.2f}, Unique Codes: {val_used_codes}/{model.token_sequentializer.vocab_size}")
+            # print(f" VQ Usage Rate: {val_usage_rate*100:.2f}%, perplexity={val_perplexity:.2f}, Unique Codes: {val_used_codes}/{model.token_sequentializer.vocab_size}")
+            for k in range(len(val_used_codes)):
+                print(f"  Codebook {k}: Usage Rate: {val_usage_rate[k]*100:.2f}%, perplexity={val_perplexity[k]:.2f}, Unique Codes: {val_used_codes[k]}/{model.token_sequentializer.vocab_size}")
+        
         # Save best model
         if avg_val_recon+avg_val_mask < best_val_loss:
             best_val_loss = avg_val_recon + avg_val_mask
@@ -187,6 +193,27 @@ def train_model(
         wandb.finish()
     print("Training Complete.")
 
+
+
+def _get_codebook_usage_stats(vocab_hits):
+    if vocab_hits.dim() == 1:
+        used_codes = [(vocab_hits > 0).sum().item()]
+        usage_rates = [used_codes / len(vocab_hits)]
+        perplexity, _ = compute_perplexity_from_hits(vocab_hits)
+        perplexity = [perplexity]
+    else:
+        K, V = vocab_hits.shape
+        used_codes = []
+        usage_rates = []
+        perplexity = []
+        for k in range(K):
+            used_code = (vocab_hits[k] > 0).sum().item()
+            usage_rate = used_code/V
+            p, _ = compute_perplexity_from_hits(vocab_hits[k])
+            used_codes.append(used_code)
+            usage_rates.append(usage_rate)
+            perplexity.append(p)
+    return np.array(used_codes), np.array(usage_rates), np.array(perplexity)
 
 if __name__ == '__main__':
     import yaml
@@ -262,8 +289,8 @@ if __name__ == '__main__':
     model = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS,configs=config,num_bottleneck=num_bn, num_recon=num_recon).to(device)
     criterion = ObjTokenReconstructionLoss(configs=dataset_config)
 
-    model.load_state_dict(torch.load(f'{save_path}', map_location=device))
-    model.to(device)
+    # model.load_state_dict(torch.load(f'{save_path}', map_location=device))
+    # model.to(device)
 
     name = f"VQVAE_vocab{NUM_EMBEDDINGS}_bn{num_bn}_{dataset_filter}"
     if dataset_config.get('use_objlat'):

@@ -6,9 +6,9 @@ model:
   decoder_depth: 4
   num_recon: 25
   num_heads: 8
-  num_embeddings: 512
+  num_embeddings: 128
   bottleneck : residual-vae
-  use_codebook: false
+  use_codebook: true
   quant:
     vq_beta: 1
     ema_decay: 0.95

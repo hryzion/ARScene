@@ -15,7 +15,7 @@ class TokenSequentializer(nn.Module):
         resi_ratio = 0.5,
         share_phi = 1,  # 0: non-shared, 1: shared, 2: partially-shared 
         use_prior_cluster = False, using_znorm = False, training = True,
-        t_scales = [25] #[1, 2, 3, 4, 5, 8, 11, 13 ,16, 25]   # + N (last scale is the full resolution)
+        t_scales = [27] #[1, 2, 3, 4, 5, 8, 11, 13 ,16, 25]   # + N (last scale is the full resolution)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -26,6 +26,24 @@ class TokenSequentializer(nn.Module):
         self.down_resampler = DiscreteResampler(d_model=embed_dim, nhead=4)
         self.up_resampler = DiscreteResampler(d_model=embed_dim, nhead=4)
 
+        self.num_codebooks = 9
+        self.sub_dim = embed_dim // self.num_codebooks  # 64
+
+        self.embeddings = nn.ModuleList([
+            nn.Embedding(vocab_size, self.sub_dim)
+            for _ in range(self.num_codebooks)
+        ])
+        for emb in self.embeddings:
+            emb.weight.data.normal_()
+
+        self.register_buffer(
+            'cluster_size',
+            torch.zeros(self.num_codebooks, vocab_size)
+        )
+        self.register_buffer(
+            'embedding_avg',
+            torch.zeros(self.num_codebooks, vocab_size, self.sub_dim)
+        )
         if share_phi == 1:
             self.seq_resi = PhiShared(
                 PhiAttention(embed_dim=embed_dim, resi_ratio=resi_ratio)
@@ -39,12 +57,13 @@ class TokenSequentializer(nn.Module):
 
         self.register_buffer('ema_vocab_hit', torch.full((len(t_scales) + 1, vocab_size),fill_value=0.0))
         self.record_hit = 0
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.register_buffer('cluster_size', torch.zeros(vocab_size))
-        self.register_buffer('embedding_avg', torch.zeros(vocab_size, embed_dim))
+        # self.embedding = nn.Embedding(vocab_size, embed_dim)
+        # self.register_buffer('cluster_size', torch.zeros(vocab_size))
+        # self.register_buffer('embedding_avg', torch.zeros(vocab_size, embed_dim))
 
-        self.embedding.weight.data.normal_()
-        self.using_znorm = using_znorm
+        # self.embedding.weight.data.normal_()
+        # self.using_znorm = using_znorm  # not used
+
         self.beta = beta
 
         self.ema_decay = ema_decay
@@ -90,28 +109,58 @@ class TokenSequentializer(nn.Module):
             ## use linear interpolation.
             SN = len(self.t_scales)
             mean_vq_loss: torch.Tensor = 0.0
-            vocab_hit_V = torch.zeros(self.vocab_size, dtype=torch.float, device=feature_map.device)
-
+            vocab_hit_V = torch.zeros(self.num_codebooks,self.vocab_size, dtype=torch.float, device=feature_map.device)
+            
             ## before last stage
             for stage_i in range(SN):
                 token_len = self.t_scales[stage_i]
-                f_down = self.down_resampler(f_rest, M=token_len).reshape(-1,D) if stage_i < SN-1 else f_rest.reshape(-1,D) # B x token_len x D
+                # print(token_len)
+                f_down = self.down_resampler(f_rest, M=token_len).reshape(-1,self.num_codebooks, self.sub_dim) if stage_i < SN-1 else f_rest.reshape(-1,self.num_codebooks, self.sub_dim)  # B x token_len x D
 
                 # self.console_log_distribution(f_down)
+                idx_list = []
+                f_hat_list = []
+                
+                # print(f_down.shape)
 
-                dist = (
-                    f_down.pow(2).sum(dim=1, keepdim=True)
-                    - 2 * f_down @ self.embedding.weight.T
-                    + self.embedding.weight.pow(2).sum(dim=1)
-                )  # (B*L, V)
 
-                idx_N = torch.argmin(dist, dim=1)
-                if self.training:
-                    self._ema_update(f_down, idx_N)
+                for k in range(self.num_codebooks):
+                    fk = f_down[:, k]  # (B*L, 64)
+                    emb = self.embeddings[k]
 
-                hit_V = idx_N.bincount(minlength=self.vocab_size).float()  # vocab_size ## not user yet
-                idx_BL = idx_N.view(B, token_len)  # B x token_len
-                f_down_hat = self.embedding(idx_BL)  # B x token_len x D
+                    dist = (
+                        fk.pow(2).sum(dim=1, keepdim=True)
+                        - 2 * fk @ emb.weight.T
+                        + emb.weight.pow(2).sum(dim=1)
+                    )  # (B*L, V)
+
+                    idx = torch.argmin(dist, dim=1)
+                    idx_list.append(idx)
+
+                    if self.training:
+                        self._ema_update_multi(k, fk, idx)
+
+                    hit_v = idx.bincount(minlength=self.vocab_size).float()
+                    vocab_hit_V[k] += hit_v
+                    f_hat_list.append(emb(idx))
+                
+                # print(f_hat_list[0].shape)
+                f_down_hat = torch.cat(f_hat_list, dim=-1).view(B, token_len, D)  # (B*L, 576)
+                # idx_BL = torch.stack(idx_list, dim=1).view(B, token_len, self.num_codebooks)
+
+                # dist = (
+                #     f_down.pow(2).sum(dim=1, keepdim=True)
+                #     - 2 * f_down @ self.embedding.weight.T
+                #     + self.embedding.weight.pow(2).sum(dim=1)
+                # )  # (B*L, V)
+
+                # idx_N = torch.argmin(dist, dim=1)
+                # if self.training:
+                #     self._ema_update(f_down, idx_N)
+
+                # hit_V = idx_N.bincount(minlength=self.vocab_size).float()  # vocab_size ## not user yet
+                # idx_BL = idx_N.view(B, token_len)  # B x token_len
+                # f_down_hat = self.embedding(idx_BL)  # B x token_len x D
 
                 f_up = self.up_resampler(f_down_hat, M=N) if stage_i < SN-1 else f_down_hat  # B x N x D; the last stage need not up sample
                 phi = self.seq_resi[stage_i/(SN-1)] if SN!=1 else nn.Identity()
@@ -122,7 +171,7 @@ class TokenSequentializer(nn.Module):
 
                 # VQ loss
                 
-                vocab_hit_V += hit_V
+        
                 mean_vq_loss += F.mse_loss(f_hat.data, feature_map).mul_(self.beta)
             
             mean_vq_loss = mean_vq_loss / SN
@@ -145,6 +194,25 @@ class TokenSequentializer(nn.Module):
                         (n + self.vocab_size * self.eps)) * n
         self.embedding.weight.data.copy_(
             self.embedding_avg / cluster_size.unsqueeze(1)
+        )
+
+    def _ema_update_multi(self, k, x, idx):
+        onehot = F.one_hot(idx, self.vocab_size).type_as(x)
+        self.cluster_size[k].mul_(self.ema_decay).add_(
+            onehot.sum(0), alpha=1 - self.ema_decay
+        )
+        embed_sum = onehot.T @ x
+        self.embedding_avg[k].mul_(self.ema_decay).add_(
+            embed_sum, alpha=1 - self.ema_decay
+        )
+
+        n = self.cluster_size[k].sum()
+        cluster_size = (
+            (self.cluster_size[k] + self.eps)
+            / (n + self.vocab_size * self.eps) * n
+        )
+        self.embeddings[k].weight.data.copy_(
+            self.embedding_avg[k] / cluster_size.unsqueeze(1)
         )
 
         

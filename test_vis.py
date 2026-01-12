@@ -11,7 +11,7 @@ from losses.recon_loss import ObjTokenReconstructionLoss
 
 
 def load_test_dataset(dataset_dir, dataset_padded_length):
-    return ThreeDFrontDataset(npz_dir=f'{dataset_dir}',split='test', padded_length=dataset_padded_length)
+    return ThreeDFrontDataset(npz_dir=f'{dataset_dir}',split='train', padded_length=dataset_padded_length)
 
 def main():
     import yaml
@@ -38,7 +38,7 @@ def main():
 
     save_config = config.get('save', {})
     save_folder = save_config.get('save_folder',"./pretrained/roomautoencoders/")
-    save_path = os.path.join(save_folder, f"{model_config['type']}.pth")
+    save_path = os.path.join(save_folder, f"{model_config['type']}_latest.pth")
 
 
     device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
@@ -68,7 +68,7 @@ def main():
     # 2. 准备测试集和 DataLoader
     test_dataset = load_test_dataset(dataset_dir, dataset_padded_length=dataset_padded_length)
     test_dataset.transform = normalizer.transform_atiss
-    test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
+    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
     loss_fn = ObjTokenReconstructionLoss(configs=dataset_config)
 

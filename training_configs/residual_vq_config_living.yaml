@@ -1,0 +1,31 @@
+model:
+  type: vqvae
+  token_dim: 64
+  encoder_depth: 6
+  num_bottleneck : 25
+  decoder_depth: 4
+  num_recon: 25
+  num_heads: 8
+  num_embeddings: 512
+  bottleneck : residual-vae
+  use_codebook: true
+  quant:
+    vq_beta: 1
+    ema_decay: 0.95
+
+super_parameters:
+  epochs: 2000
+  batch_size: 128
+  learning_rate: 0.0001
+  weight_decay: 0.00001
+  cuda: 0
+
+dataset:
+  filter_fn: livingroom
+  dataset_dir: ./datasets/processed_livingroom
+  use_objlat: true
+  attr_dim: 107
+  padded_length: 27
+
+save:
+  save_folder: ./pretrained/vqvae/residual_vq_wo_bn_livingroom_lat64_exp2/
