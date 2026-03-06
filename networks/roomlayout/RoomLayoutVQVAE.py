@@ -228,6 +228,35 @@ class Hidden2Out(nn.Module):
 
         return ret_token
 
+    def decode_from_hidden(self, x):
+        class_logits = self.class_layer(x)
+        class_label = torch.argmax(class_logits, dim = -1)
+        class_emb = self.class_embedding(class_label)
+
+        cf = torch.cat([x, class_emb], dim=-1)
+        trans_pred = self.trans_layer(cf)
+
+        tx = self.pe_tr_x(trans_pred[:, :, 0:1])
+        ty = self.pe_tr_y(trans_pred[:, :, 1:2])
+        tz = self.pe_tr_z(trans_pred[:, :, 2:3])
+
+        cf = torch.cat([cf, tx, ty, tz], dim=-1)
+
+        angle_pred = self.angle_layer(cf)
+        rz = self.pe_ro_z(angle_pred)
+        cf = torch.cat([cf, rz], dim=-1)
+
+        size_pred = self.size_layer(cf)
+        sx = self.pe_sz_x(size_pred[:, :, 0:1])
+        sy = self.pe_sz_y(size_pred[:, :, 1:2])
+        sz = self.pe_sz_z(size_pred[:, :, 2:3])
+
+        cf = torch.cat([cf, sx, sy, sz], dim=-1)
+        shape_pred = self.shape_layer(cf)
+
+        ret_token = torch.cat([class_logits, trans_pred, size_pred, angle_pred, shape_pred], dim=-1) # [num_class, 3, 3, 1, 64]
+        return ret_token
+
 
     @staticmethod
     def _mlp(hidden_size, output_size):
@@ -254,6 +283,7 @@ class RoomLayoutVQVAE(nn.Module):
         # VQVAE encoder and decoder
 
         attr_dim = int(configs['dataset']['attr_dim'])
+        self.use_objlat = configs['dataset'].get('use_objlat', True)
         self.token_dim = token_dim
         self.test_mode = test_mode
         self.num_classes = num_classes
@@ -271,7 +301,8 @@ class RoomLayoutVQVAE(nn.Module):
 
         self.use_codebook = configs['model'].get('use_codebook', True)
 
-        encoder_dim = 64*8+64 # pos(64*3) + size(64*3) + rot(64*1) + class(64) + shape(64)
+        encoder_dim = 64*8+64  if self.use_objlat else 64*8 # pos(64*3) + size(64*3) + rot(64*1) + class(64) + shape(64) 
+        self.encoder_dim = encoder_dim
         self.encoder = SceneLayoutTokenEncoder(encoder_dim, depth=enc_depth, heads=heads,attr_dim=attr_dim, num_bottleneck=num_bottleneck)
         self.quantizer = VectorQuantizer(num_embeddings, token_dim)
 
@@ -327,12 +358,23 @@ class RoomLayoutVQVAE(nn.Module):
         return mask_logit, recon, vq_loss, indices
     
     def encode_obj_tokens(self,x, padding_mask=None):
-        z = self.encoder(x, padding_mask=padding_mask) # B, N+1, D
+        class_id = x[:,:, :self.num_classes]
+        class_emb = self.class_embedding(torch.argmax(class_id, dim=-1))
+        tx = self.pe_tr_x(x[:, :, self.num_classes:self.num_classes+1])
+        ty = self.pe_tr_y(x[:, :, self.num_classes+1:self.num_classes+2])
+        tz = self.pe_tr_z(x[:, :, self.num_classes+2:self.num_classes+3])
+        sx = self.pe_sz_x(x[:, :, self.num_classes+3:self.num_classes+4])
+        sy = self.pe_sz_y(x[:, :, self.num_classes+4:self.num_classes+5])
+        sz = self.pe_sz_z(x[:, :, self.num_classes+5:self.num_classes+6])
+        rx = self.pe_ro(x[:, :, self.num_classes+6:self.num_classes+7])
+
+        x_cat = torch.cat([class_emb, tx, ty, tz, sx, sy, sz, rx, x[:, :, self.num_classes+7:]], dim=-1)
+        z = self.encoder(x_cat, padding_mask=padding_mask) # B, N, D
+        
         return z
     
     def fhat_to_img(self, f_hat, padding_mask = None):
-        x = self.decoder(f_hat, padding_mask)
-        root = x[:, :1, :]    # B, 1, D
-        recon = x[:, 1:, :]   # B, N, D
-        return recon
+        hidden_lat, mask_logit = self.decoder(f_hat) 
+        recon = self.hidden2out.decode_from_hidden(hidden_lat)
+        return recon, mask_logit
 

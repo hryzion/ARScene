@@ -7,7 +7,7 @@ from .quant import TokenSequentializer
 import math
 from functools import partial
 from .basic_attention import AdaptLayerNormDecoderBlock
-from utils import check
+from utils import check, sample_multicodebook_topk_topp
 
 
 class AdaLNBeforeHead(nn.Module):
@@ -34,9 +34,9 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
                 config,
                 device,
                 depth = 16, embed_dim = 128, num_heads = 16, mlp_ratio=4., drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
-                shared_aln =False,cond_drop_rate=0.1,norm_eps=1e-6,
+                shared_aln =False, cond_drop_rate=0.4,norm_eps=1e-6,
                 attn_l2_norm = False,
-                t_scales = [1, 2, 4, 7, 11],
+                t_scales = [1, 5, 15, 27],
                 use_prior_cluster = False
         ):
         super().__init__()
@@ -52,10 +52,9 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
         ######## Auto-Regressive Model Settings ########
 
         # basic settings (parameters)
-        self.vae_embedding_dim = vae_local.token_dim
+        self.vae_embedding_dim = vae_local.encoder_dim
         self.depth, self.C, self.D, self.num_heads = depth, embed_dim, embed_dim, num_heads
         self.t_scales = t_scales
-        self.t_scales.append(self.padded_length+1)
         self.L = sum(t_len for t_len in self.t_scales)
 
         self.first_len = self.t_scales[0]
@@ -72,10 +71,7 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
         self.vae:RoomLayoutVQVAE = vae_local
         self.vae_token_sequentializer: TokenSequentializer = vae_local.token_sequentializer
 
-        self.in_embedding = nn.Linear(self.vae_embedding_dim, self.C)
-        self.out_embedding=nn.Linear(self.C, self.vae_embedding_dim)
 
-        self.proj_mask = nn.Linear(self.C, 2) # logits
 
         ####### Condition Settings #######
 
@@ -98,6 +94,11 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
                 self.fc_room_mask_f = nn.Linear(512, self.C)
             for p in self.feature_extractor.parameters():
                 p.requires_grad = False
+        
+        self.null_cond = nn.Parameter(torch.zeros(1, self.C))
+
+        self.cond_drop_rate = cond_drop_rate
+        
 
 
         ################################################
@@ -116,6 +117,8 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
         nn.init.trunc_normal_(self.level_embedding.weight.data, mean=0, std=init_std)
         # print(self.level_embedding.weight.abs().max())
 
+        #word embedding
+        self.word_embed = nn.Linear(self.vae_embedding_dim, self.C)
 
         # ar blocks
         self.shared_ada_lin = nn.Sequential(nn.SiLU(inplace=False), SharedAdaLin(self.D, 6*self.C)) if shared_aln else nn.Identity()
@@ -127,8 +130,7 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
                 cond_dim=self.D, shared_aln=shared_aln,
                 block_idx=block_idx, embed_dim=self.C, norm_layer=norm_layer, num_heads=num_heads, mlp_ratio=mlp_ratio,
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[block_idx], last_drop_p=0 if block_idx == 0 else dpr[block_idx-1],
-                attn_l2_norm=attn_l2_norm
-                
+                attn_l2_norm=attn_l2_norm, use_text_condition = self.text_condition
             )
             for block_idx in range(depth)
         ])
@@ -140,31 +142,60 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
         attn_bias_for_masking = torch.where(d >= dT, 0., -torch.inf).reshape(1, 1, self.L, self.L)
         self.register_buffer('attn_bias_for_masking', attn_bias_for_masking.contiguous())
 
+        # classifier head
+        self.head = nn.Linear(self.C, self.vae_token_sequentializer.num_codebooks * self.vae_token_sequentializer.vocab_size) ## 最后要拆分成num_codebooks个token预测
+
 
 
     def forward(self, x_wo_first, text_desc_c, room_mask_c, key_padding_mask = None):
         bg, ed =0, self.L
-        B = x_wo_first.shape[0]
+        B = x_wo_first.shape[0] # B, sumL-1, D
         # print("x without first_len:\n", x_wo_first)
 
-        tokenized = self.tokenizer(text_desc_c, padding=True, return_tensors='pt').to(x_wo_first.device)
-        text_f = self.bert_model(**tokenized).last_hidden_state
-        kv_padding_mask = tokenized.attention_mask
-        # print("kv_padding_mask: ",kv_padding_mask.shape)
-        text_condition_cross = self.fc_text_f(text_f)
+        if self.text_condition:
+            tokenized = self.tokenizer(text_desc_c, padding=True, return_tensors='pt').to(x_wo_first.device)
+            text_f = self.bert_model(**tokenized).last_hidden_state
+            kv_padding_mask = tokenized.attention_mask
+            # print("kv_padding_mask: ",kv_padding_mask.shape)
+            text_condition_cross = self.fc_text_f(text_f)
+        else:
+            text_condition_cross = None
+            kv_padding_mask = None
 
-        rm_f = self.feature_extractor(room_mask_c)
-        # print("rm_f max", rm_f.abs().max())
-        room_condition = self.fc_room_mask_f(rm_f)
-        # print("room_condition max", room_condition.abs().max())
+        use_null = False
+        if self.training and self.room_mask_condition:
+            # classifier-free style drop
+            if torch.rand(1).item() < self.cond_drop_rate:
+                use_null = True
 
-        
-        sos = room_condition
-        sos = sos.unsqueeze(1).expand(B, self.first_len, -1) + self.pos_start.expand(B, self.first_len, -1)
+        if (not self.room_mask_condition) or use_null or (room_mask_c is None):
+            room_condition = self.null_cond.expand(B, -1)
+        else:
+            rm_f = self.feature_extractor(room_mask_c)
+            room_condition = self.fc_room_mask_f(rm_f)
+
+        # if self.room_mask_condition:
+        #     rm_f = self.feature_extractor(room_mask_c)
+        #     # print("rm_f max", rm_f.abs().max())
+        #     room_condition = self.fc_room_mask_f(rm_f)
+        #     # print("room_condition max", room_condition.abs().max())
+        # else:
+        #     room_condition = self.null_cond.expand(B,-1)
+
+        # if use_null:
+        #     print("null")
+        sos = room_condition # B, C
+        sos = sos.unsqueeze(1).expand(B, self.first_len, -1) + self.pos_start.expand(B, self.first_len, -1) # B, 1, C
         # print(x_wo_first.abs().max())
-        x = torch.cat([sos, x_wo_first],dim=1)
+
+        # print(x_wo_first.shape)
+
+        x = torch.cat([sos, self.word_embed(x_wo_first)],dim=1) # B, SumL, C  note: [BLD] is projected to [BLC]
+        
+        # print(x.shape)
+        # exit()
         # print(x.abs().max())
-        x += self.level_embedding(self.lvl_1L[:, :ed].expand(B, -1)) + self.pos_1LC[:, :ed]
+        x += self.level_embedding(self.lvl_1L[:, :ed].expand(B, -1)) + self.pos_1LC[:, :ed] # add level and positional embedding, the positional embeding is somehow important because of the model.
         # print(x.abs().max())
         
         attn_bias = self.attn_bias_for_masking[:, :, :ed, :ed]
@@ -173,27 +204,49 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
             x = b(x=x, cond_BD = room_condition, cond_cross = text_condition_cross, self_key_padding_mask = None, attn_bias = attn_bias, cross_kv_padding_mask = kv_padding_mask )
             # print(f"After block {i+1}: \n",x)
             # check(f"After block {i+1}", x)
+        logits = self.head(x)
+        return logits # B x L x (num_Codebooks * vocab_size) 
 
+    def get_logits(self, x):
+        pass
 
-        pred_mask = self.proj_mask(x)
+    def auto_regressive_inference(self, B, test_desc, room_mask, cfg, top_k=0, top_p=0.0):
+        # text condition
+        if self.text_condition:
+            tokenized = self.tokenizer(test_desc, padding=True, return_tensors='pt').to(room_mask.device)
+            text_f = self.bert_model(**tokenized).last_hidden_state
+            kv_padding_mask = tokenized.attention_mask
+            # print("kv_padding_mask: ",kv_padding_mask.shape)
+            text_condition_cross = self.fc_text_f(text_f)
+        else:
+            text_condition_cross = None
+            kv_padding_mask = None
+        # tokenized = self.tokenizer(test_desc, padding=True, return_tensors='pt').to(room_mask.device)
+        # text_f = self.bert_model(**tokenized).last_hidden_state
+        # kv_padding_mask = tokenized.attention_mask
+        # text_condition_cross = self.fc_text_f(text_f)
+
+        # room condition
+        if room_mask is None:
+            room_condition = self.null_cond.expand(B, -1)
+        else:
+            rm_f = self.feature_extractor(room_mask)
+            room_condition = self.fc_room_mask_f(rm_f)
+
         
 
-        return x, pred_mask
+        intermediate_tokens = []
+        intermediate_rooms = []
+        intermediate_masks = []
 
-    def auto_regressive_inference(self, B, test_desc, room_mask, cfg):
-        tokenized = self.tokenizer(test_desc, padding=True, return_tensors='pt').to(room_mask.device)
-        text_f = self.bert_model(**tokenized).last_hidden_state
-        kv_padding_mask = tokenized.attention_mask
 
-        text_condition_cross = self.fc_text_f(text_f)
-        rm_f = self.feature_extractor(room_mask)
-        room_condition = self.fc_room_mask_f(rm_f)
         sos = room_condition
+        # print(sos.shape)
         level_pos = self.level_embedding(self.lvl_1L)+self.pos_1LC
         next_token_map = sos.unsqueeze(1).expand(B, self.first_len, -1) + self.pos_start.expand( B, self.first_len, -1) + level_pos[:, :self.first_len]
 
         cur_L = 0
-        f_hat = sos.new_zeros(B, self.t_scales[-1], self.C)
+        f_hat = sos.new_zeros(B, self.t_scales[-1], self.vae_embedding_dim)
 
         for b in self.blocks:
             b.enable_kv_cache(True)
@@ -204,21 +257,33 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
             # print(x.shape)
             for b in self.blocks:
                 x = b(x=x, cond_BD = room_condition, cond_cross = text_condition_cross, self_key_padding_mask = None, attn_bias = None, cross_kv_padding_mask = kv_padding_mask)
-            print(f"stage {si} :", x[0, :self.t_scales[si]]) if si == 0 else None
-            h_BLC = x
+            # print(f"stage {si} :", x[0, :self.t_scales[si]]) if si == 0 else None
+            logits_BLKV = self.head(x).reshape(B, tn, self.vae_token_sequentializer.num_codebooks,self.vae_token_sequentializer.vocab_size)
+
+            idx_BlK = sample_multicodebook_topk_topp(logits_BLKV=logits_BLKV, top_k=top_k, top_p = top_p)
+            intermediate_tokens.append(idx_BlK)
+            h_BLC = self.vae_token_sequentializer.idx_to_embedding(idx_BlK)
             f_hat, next_token_map = self.vae_token_sequentializer.get_next_autoregressive_input(si, len(self.t_scales), f_hat, h_BLC )
-            pred_mask_logits = self.proj_mask(x)
+
+            intermediate_room, intermediate_mask = self.vae.fhat_to_img(f_hat=f_hat)
+            intermediate_rooms.append(intermediate_room)
+            intermediate_masks.append(intermediate_mask)
+
             if si != len(self.t_scales) -1:
+                next_token_map = self.word_embed(next_token_map)
                 next_token_map += level_pos[:, cur_L:cur_L + self.t_scales[si+1]]
             
         for b in self.blocks:
             b.enable_kv_cache(False)
 
-        pred_mask = pred_mask_logits.argmax(dim=2).bool()[:,-self.padded_length:]
-        # print(f_hat.shape)
-        # print(pred_mask)
+        final_scene, final_mask =  self.vae.fhat_to_img(f_hat=f_hat)
 
-        return self.vae.fhat_to_img(f_hat=f_hat, padding_mask=pred_mask), pred_mask
+        return final_scene, final_mask, {
+            'intermediate_rooms': torch.stack(intermediate_rooms,dim=0),
+            'intermediate_masks':torch.stack(intermediate_masks, dim=0),
+            'intermediate_tokens':intermediate_tokens
+        }
+        
             
 
 

@@ -10,3 +10,4 @@ datasets/processed_wo_lat
 datasets/processed_wi_lat
 wandb/
 pretrained/
+networks/drifting/sanity_check

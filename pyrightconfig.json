@@ -4,6 +4,10 @@
     ],
 
     "exclude": [
-        "ChamferDistancePytorch"
+        "ChamferDistancePytorch",
+        "datasets",
+        "pretrained",
+        "visualizations",
+        "wandb"
     ]
 }

@@ -6,7 +6,7 @@ model:
   decoder_depth: 4
   num_recon: 25
   num_heads: 8
-  num_embeddings: 1024
+  num_embeddings: 512
   bottleneck : residual-vae
   use_codebook: true
   quant:
@@ -21,11 +21,11 @@ super_parameters:
   cuda: 0
 
 dataset:
-  filter_fn: livingroom
-  dataset_dir: ./datasets/processed_livingroom
+  filter_fn: library
+  dataset_dir: ./datasets/processed_library
   use_objlat: true
   attr_dim: 107
   padded_length: 27
 
 save:
-  save_folder: ./pretrained/vqvae/wi_residual_vq_wo_context_ema_livingroom_lat64_exp2/
+  save_folder: ./pretrained/vqvae/wi_residual_vq_wo_context_ema_library_lat64/

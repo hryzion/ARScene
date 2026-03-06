@@ -1,0 +1,26 @@
+model:
+  type: drift
+  num_class: 31
+  class_embedding: 64
+  embedding_dim: 128
+  depth: 8
+  heads: 8
+  use_text_condition: False
+
+super_parameters:
+  epochs: 3000
+  batch_size: 128
+  learning_rate: 0.00001
+  weight_decay: 0.00001
+  optimizer: Adam
+  cuda: 0
+
+dataset:
+  filter_fn: bedroom
+  dataset_dir: ./datasets/processed_bedroom
+  use_objlat: False
+  attr_dim: 38
+  padded_length: 27
+
+save:
+  save_folder: ./pretrained/drift/

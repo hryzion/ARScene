@@ -233,6 +233,42 @@ def check_grad_flow(model):
             else:
                 print(f'[OK] {name} | mean={p.grad.abs().mean():.2e}')
 
+
+
+
+
+
+
+
+
+def sample_multicodebook_topk_topp(logits_BLKV: torch.Tensor, top_k: int = 0, top_p: float = 0.0, rng=None, num_samples=1):
+    B, L, K, V = logits_BLKV.shape
+    z = torch.zeros(B, L, K, dtype=torch.long, device=logits_BLKV.device)
+
+    for k in range(K):
+        logits_BLVk = logits_BLKV[:, :, k, :]      # (B, L, Vk)
+
+        # ---- Top-K ----
+        if top_k > 0:
+            kth = logits_BLVk.topk(top_k, dim=-1).values[..., -1:]
+            logits_BLVk = logits_BLVk.masked_fill(logits_BLVk < kth, -torch.inf)
+
+        # ---- Top-P ----
+        if top_p > 0:
+            sorted_logits, sorted_idx = logits_BLVk.sort(descending=False)
+            sorted_idx_to_remove = sorted_logits.softmax(dim=-1).cumsum_(dim=-1) <= (1 - top_p)
+            sorted_idx_to_remove[..., -1:] = False
+            logits_BLVk.masked_fill_(sorted_idx_to_remove.scatter(sorted_idx.ndim - 1, sorted_idx, sorted_idx_to_remove), -torch.inf)
+        replacement = num_samples >= 0
+        num_samples = abs(num_samples)
+        probs = logits_BLVk.softmax(dim=-1)
+        z[:, :, k] = torch.multinomial(probs.view(-1, V), num_samples=num_samples, replacement=replacement, generator=rng).view(B, L)
+
+    return z # B, L, K
+
+
+
+
 from collections import Counter, defaultdict
 import random
 
@@ -561,7 +597,7 @@ def pack_scene_json(decoded_data,room_name):
 
 
 
-def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = None, batch_idx=0):
+def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = None, batch_idx=0, processing = False):
     """
     recon_data: List[List[obj_dict]]
     每个obj_dict形如:
@@ -584,16 +620,21 @@ def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = N
         fig, axes = plt.subplots(1, N, figsize=(5*N, 10))
 
     
-    # if N == 1:
+    # if raw_data is None:
     #     axes = [axes]  # 统一成list方便遍历
 
     for idx, scene in enumerate(recon_data):
-
-        ax = axes[0, idx] if N!=1 else axes[0]
+        if raw_data is None:
+            ax = axes[idx] if N!=1 else axes
+        else:
+            ax = axes[0, idx] if N!=1 else axes[0]
         ax.set(xlim=(-4, 4), ylim=(-4, 4))
         ax.set_title(f"Scene {idx}")
         if room_name is not None:
-            ax.set_title(f"{room_name[idx]}")
+            if not processing:
+                ax.set_title(f"{room_name[idx]}")
+            else:
+                ax.set_title(f"{room_name[0]}")
         ax.set_xlabel("X")
         ax.set_ylabel("Z")
         ax.set_aspect('equal', adjustable='box')
@@ -823,7 +864,51 @@ def render_room_shape_image_centered(room, image_size=256, scale_padding=0.9):
     draw = ImageDraw.Draw(img)
     draw.polygon(polygon, fill=(255,255,255))
 
+    return img
+
+def render_room_shape_image_fixed_scale(room, image_size = 256, fixed_size = 10.0):
+    """
+    将 room['roomShape'] 渲染为图像，并使轮廓几何中心对齐到图像中心。
     
+    参数:
+        room (dict): 包含 'roomShape' 字段，二维或三维坐标。
+        image_size (int): 输出图像的边长（正方形）
+        fixed_size (float): 固定缩放比例，
+    
+    返回:
+        PIL.Image 图像对象
+    """
+    vertices = [v[:2] for v in room['roomShape']]
+    vertices_np = np.array(vertices)
+
+    # 几何中心（质心）
+    bbox = find_bbox_from_room_shape(room['roomShape'])
+    bbox_min = np.array(bbox['min'])
+    bbox_max = np.array(bbox['max'])
+    center = [(min_val + max_val) / 2.0 for min_val, max_val in zip(bbox_min, bbox_max)]
+    center = np.array([center[0] ,center[2]])
+    # print(center)
+    # 移动所有点使其中心为原点
+    centered_vertices = vertices_np - center
+
+    # 计算边界，用于缩放
+    max_extent = np.abs(vertices_np).max()
+    scale = (image_size * 0.9/ 2) / fixed_size if fixed_size > 0 else 1.0
+    # if max_extent * 0.9  > fixed_size:
+    #     print(max_extent)
+        # print(room['roomId'])
+
+    # 缩放并转换到图像坐标
+    def to_image_coords(p):
+        x, y = p * scale
+        return (int(image_size / 2 + x), int(image_size / 2 - y))  # y 轴翻转
+
+    polygon = [to_image_coords(p) for p in centered_vertices]
+
+    # 创建图像并绘制
+    img = Image.new("RGB", (image_size, image_size), color=(0,0,0))
+    draw = ImageDraw.Draw(img)
+    draw.polygon(polygon, fill=(255,255,255))
 
     return img
 

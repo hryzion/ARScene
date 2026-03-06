@@ -217,7 +217,7 @@ class SceneTokenNormalizer:
         original_shape = obj_tokens.shape
         if obj_tokens.dim() == 3:
             B, N, D = original_shape
-            obj_tokens = obj_tokens.view(-1, D)  # [B*N, D]
+            obj_tokens = obj_tokens.reshape(-1, D)  # [B*N, D]
 
         # print(obj_tokens.shape)
         slices = self.slices

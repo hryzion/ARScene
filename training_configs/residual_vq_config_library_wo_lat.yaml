@@ -21,11 +21,11 @@ super_parameters:
   cuda: 0
 
 dataset:
-  filter_fn: livingroom
-  dataset_dir: ./datasets/processed_livingroom
-  use_objlat: true
+  filter_fn: library
+  dataset_dir: ./datasets/processed_library
+  use_objlat: false
   attr_dim: 107
   padded_length: 27
 
 save:
-  save_folder: ./pretrained/vqvae/wi_residual_vq_wo_context_ema_livingroom_lat64_exp2/
+  save_folder: ./pretrained/vqvae/residual_vq_library_wo_lat/

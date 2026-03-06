@@ -6,6 +6,7 @@ def parse_arguments():
     parser.add_argument('--exp', type=int, default=0)
     parser.add_argument('--cuda' ,type=int, default=0)
     parser.add_argument('--wandb', action='store_true')
+    parser.add_argument('--tag', type=str, default="latest")
     args = parser.parse_args()
     return args
 

@@ -150,20 +150,10 @@ class AdaptLayerNormSelfAttention(nn.Module):
         if self.shared_aln:
             cond = cond[:,None,None,:]
             gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond).unbind(2) # 116C + B16C =unbind(2)=> 6 B1C
-            # gamma1 = gamma1.clamp(-5, 5)
-            # gamma2 = gamma2.clamp(-5, 5)
-            # scale1 = scale1.clamp(-5, 5)
-            # scale2 = scale2.clamp(-5, 5)
-            # shift1 = shift1.clamp(-1, 1)
-            # shift2 = shift2.clamp(-1, 1)
+           
         else:
             gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond).view(-1, 1, 6, self.embed_dim).unbind(2)
-            gamma1 = gamma1.clamp(-5, 5)
-            gamma2 = gamma2.clamp(-5, 5)
-            scale1 = scale1.clamp(-5, 5)
-            scale2 = scale2.clamp(-5, 5)
-            shift1 = shift1.clamp(-1, 1)
-            shift2 = shift2.clamp(-1, 1)
+            
             
         # check("in x:", x)
         x = x + self.drop_path(self.self_attn( self.ln_wo_grad(x).mul(scale1.add(1)).add(shift1), attn_mask=causal_mask, key_padding_mask=key_padding_mask ).mul(gamma1))
@@ -224,32 +214,31 @@ class AdaptLayerNormDecoderBlock(nn.Module):
         self, block_idx, last_drop_p, embed_dim, cond_dim,
         shared_aln: bool, norm_layer,
         num_heads, mlp_ratio=4., drop=0., attn_drop=0., drop_path=0.,
-        attn_l2_norm=False
+        attn_l2_norm=False, use_text_condition = True
     ):
         super().__init__()
+        self.use_text_condition = use_text_condition
         self.self_attn_block = AdaptLayerNormSelfAttention(block_idx,last_drop_p,embed_dim,cond_dim,
             shared_aln, norm_layer,
             num_heads, mlp_ratio, drop, attn_drop, drop_path,
             attn_l2_norm
         )
-        self.cross_attn_block = AdaptLayerNormCrossAttention(block_idx,last_drop_p,embed_dim,cond_dim,
-            shared_aln, norm_layer,
-            num_heads, mlp_ratio, drop, attn_drop, drop_path,
-            attn_l2_norm
-        )
+
+        if self.use_text_condition:
+            self.cross_attn_block = AdaptLayerNormCrossAttention(block_idx,last_drop_p,embed_dim,cond_dim,
+                shared_aln, norm_layer,
+                num_heads, mlp_ratio, drop, attn_drop, drop_path,
+                attn_l2_norm
+            )
+        
     
     def enable_kv_cache(self, enabled :bool):
         self.self_attn_block.self_attn.kv_caching(enabled)
 
     def forward(self, x, cond_BD, cond_cross, attn_bias, self_key_padding_mask = None, cross_kv_padding_mask = None):
         x = self.self_attn_block(x,cond_BD,causal_mask = attn_bias,key_padding_mask = self_key_padding_mask)  # Due to unified length of sar input (sum(t_scales)+N), key padding mask is supposed to be 0.
-        # print(f"After self attn block:\n" ,x[0,0])
-        # check("self attn block", x)
-
-        x = self.cross_attn_block(x, cond_BD, cond_cross, causal_mask = None, key_padding_mask = cross_kv_padding_mask) # cross attention doesn't need causal mask
-        # check("cross attn block", x)
-        # print()
-        # print(f"After cross attn block:\n" ,x[0,0])
+        if self.use_text_condition:
+            x = self.cross_attn_block(x, cond_BD, cond_cross, causal_mask = None, key_padding_mask = cross_kv_padding_mask) # cross attention doesn't need causal mask
         return x
     
 class SelfAttnConv(nn.Module):

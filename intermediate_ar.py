@@ -11,7 +11,19 @@ from config import parse_arguments
 from utils import decode_obj_tokens_with_mask, visualize_result, pack_scene_json
 import os
 from torchvision import models
+import matplotlib.pyplot as plt
 
+def plot_vocab_distribution(token_counter, stage_id, k_id, save_dir):
+    os.makedirs(save_dir, exist_ok=True)
+    hist = token_counter[stage_id, k_id].cpu()
+    hist = hist/hist.sum()
+    plt.figure(figsize=(12, 4))
+    plt.bar(range(len(hist)), hist)
+    plt.xlabel("Token ID")
+    plt.ylabel("Frequency")
+    plt.title(f"Stage {stage_id} - Codebook {k_id} Token Distribution")
+    plt.savefig(os.path.join(save_dir,f'Codebook{k_id}-Stage{stage_id}TokenDistribution.png'))
+    plt.close()
 
 
 def load_test_dataset(dataset_dir,dataset_padded_length):
@@ -94,7 +106,7 @@ def main():
 
     test_dataset = load_test_dataset(dataset_dir,dataset_padded_length)
     test_dataset.transform = normalizer.transform_atiss
-    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
     ae_encoder = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, test_mode=True, configs=config,num_bottleneck=num_bn, num_recon=num_recon).to(device)
     ae_encoder.load_state_dict(torch.load(f'{encoder_pretrained_path}', map_location=device))
@@ -122,6 +134,9 @@ def main():
     )
     with torch.no_grad():
         print("start_test")
+
+        token_counter = torch.zeros(len(sar.t_scales), sar.vae_token_sequentializer.num_codebooks, sar.vae_token_sequentializer.vocab_size).to(device)
+
         for batch_idx, batch in enumerate(test_loader):
             room_name = batch['room_name']
             room_shape = batch['room_shape'].to(device)
@@ -129,62 +144,60 @@ def main():
             attention_mask = batch['attention_mask'].to(device)
             text_desc = batch['text_desc']
 
-            # token_map = sar.vae.encode_obj_tokens(obj_tokens, padding_mask=attention_mask)
-            # residual_fm_gt_list = sar.vae_token_sequentializer.generate_residual_fm_gt(token_map, padding_mask=key_padding_mask)
-            # # print("ZHX Note: after generate gt")
-            # fhat_from_residual = sar.vae_token_sequentializer.get_fhat_from_residual_fm(residual_fm_gt_list, padding_mask=key_padding_mask)
-            # # print(fhat_from_residual.shape)
-            # recon_from_residual = sar.vae.fhat_to_img(f_hat=fhat_from_residual, padding_mask=attention_mask)
-            # # print(recon_from_residual.shape)
-
-
-            # x_wo_first, mask_gt = sar.vae_token_sequentializer.generate_sar_input(residual_fm_gt_list, padding_mask=key_padding_mask)
-
-
-
-            # residual_fm_gt = torch.cat(residual_fm_gt_list, dim = 1)
-            # x_pred, mask_pred = sar(x_wo_first,text_desc, room_shape, key_padding_mask =mask_gt)
-            # loss, loss_dict = criterion(x_pred, mask_pred, residual_fm_gt, mask_gt)
-            # # print(loss_dict)
-            # pred_mask = mask_pred.argmax(dim=2).bool()[:,-sar.padded_length-1:]
-            # # print(pred_mask.shape)
-            # print(x_pred[0,0])
-            # print(residual_fm_gt[0,0])
-            # print(F.mse_loss(x_pred[0,0] ,residual_fm_gt[0,0]))
-
-            # exit()
-            infer_room, infer_mask_prob,_ = sar.auto_regressive_inference(B = 4, test_desc=text_desc, room_mask=None,cfg=0,top_k=900, top_p=0.95)
+            infer_room, infer_mask_prob, intermediate_results = sar.auto_regressive_inference(B = 1, test_desc=text_desc, room_mask=room_shape,cfg=0,top_k=900, top_p=0.95)
             # print(infer_mask.shape)
-            infer_valid_mask = (infer_mask_prob > 0.5).bool().squeeze(-1)
+            intermediate_rooms = intermediate_results['intermediate_rooms']
+            intermediate_mask_prob = intermediate_results['intermediate_masks']
+            intermediate_tokens = intermediate_results['intermediate_tokens']
 
-            # print(infer_valid_mask)
-            # root, recon, vq_loss, _ = sar.vae(obj_tokens, padding_mask=attention_mask)
-            # room_pred = sar.vae.fhat_to_img(f_hat=x_pred, padding_mask=pred_mask)
+            S, B, N, D = intermediate_rooms.shape
+            intermediate_rooms = intermediate_rooms.reshape(S * B, N, D)[...,:38]
+            intermediate_mask_prob = intermediate_mask_prob.reshape(S * B, N, -1)
+            # print(intermediate_mask_prob.shape)
+            # infer_valid_mask = (infer_mask_prob > 0.5).bool().squeeze(-1).expand(S,-1)
+            infer_valid_mask = (intermediate_mask_prob > 0.5).bool().squeeze(-1)
+            intermediate_rooms = torch.cat([intermediate_rooms, obj_tokens], dim = 0)
+            infer_valid_mask = torch.cat([infer_valid_mask, attention_mask], dim = 0)
+            for s, idx_BLK in enumerate(intermediate_tokens):
+                # idx_BLK: [B, L, K]
+                B, L, K = idx_BLK.shape
 
-            denormalized_infer = normalizer.invert_transform_atiss(infer_room)
-            # print(denormalized_infer.shape)
-            denormalized_obj_tokens = normalizer.invert_transform_atiss(obj_tokens)
-            # denormalized_recon = normalizer.inverse_transform(recon_from_residual)
+                for k in range(K):
+                    tokens = idx_BLK[:, :, k].reshape(-1)
 
+
+                    hist = torch.bincount(
+                        tokens,
+                        minlength=token_counter.shape[-1]
+                    ).float()
+
+                    # if s== 0 and k == 0:
+                    #     print(tokens)
+                    token_counter[s, k] += hist
+         
+            denormalized_infer = normalizer.invert_transform_atiss(intermediate_rooms)
             decoded_infer = decode_obj_tokens_with_mask(denormalized_infer, infer_valid_mask, use_objlat=dataset_config['use_objlat'])
-            decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'])
+            # decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'])
             # decoded_recon  = decode_obj_tokens_with_mask(denormalized_recon, attention_mask, use_objlat=dataset_config['use_objlat'])
 
-            test_scene_jsons = pack_scene_json(decoded_infer,room_name)
-            for i, scene_json in enumerate(test_scene_jsons):
-                save_path = os.path.join(f'{save_folder}/scene/{args.tag}', f'{room_name[i]}_infer.json')
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                with open(save_path, 'w') as f:
-                    import json
-                    json.dump(scene_json, f, indent=4)
+            # test_scene_jsons = pack_scene_json(decoded_infer,room_name)
+            # for i, scene_json in enumerate(test_scene_jsons):
+            #     save_path = os.path.join(f'{save_folder}/intermediate/scene/{args.tag}', f'{room_name[i]}_infer.json')
+            #     os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            #     with open(save_path, 'w') as f:
+            #         import json
+            #         json.dump(scene_json, f, indent=4)
                 # print(f'Saved reconstructed scene JSON to {save_path}')
             # 这里调用可视化函数，可以传入输入和输出
-            visualize_result(decoded_infer, raw_data=decoded_raw, room_name=room_name, save_dir=f'{save_folder}/topdown_infer/{args.tag}')
+            visualize_result(decoded_infer, raw_data=None, room_name=room_name, save_dir=f'{save_folder}/intermediate/topdown_infer/{args.tag}',processing=True)
             # visualize_result(decoded_recon, raw_data=decoded_raw,room_name=room_name, save_dir=f'{save_folder}/topdown_recon')
 
+            # if (batch_idx + 1) % 20 == 0:
+            #     for st in range(len(sar.t_scales)):
+            #         for k in range(sar.vae_token_sequentializer.num_codebooks):
+            #             plot_vocab_distribution(token_counter,st,k,f'{save_folder}/intermediate/tokens')
             print(f"Processed batch {batch_idx+1}/{len(test_loader)}")
 
-
-            
+                
 if __name__ == "__main__":
     main()

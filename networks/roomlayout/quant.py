@@ -15,7 +15,7 @@ class TokenSequentializer(nn.Module):
         resi_ratio = 0.5,
         share_phi = 1,  # 0: non-shared, 1: shared, 2: partially-shared 
         use_prior_cluster = False, using_znorm = False, training = True,
-        t_scales = [27] #[1, 2, 3, 4, 5, 8, 11, 13 ,16, 25]   # + N (last scale is the full resolution)
+        t_scales = [1,5,15,27] #[1, 2, 3, 4, 5, 8, 11, 13 ,16, 25]   # + N (last scale is the full resolution)
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -26,8 +26,9 @@ class TokenSequentializer(nn.Module):
         self.down_resampler = DiscreteResampler(d_model=embed_dim, nhead=4)
         self.up_resampler = DiscreteResampler(d_model=embed_dim, nhead=4)
 
-        self.num_codebooks = 9
-        self.sub_dim = embed_dim // self.num_codebooks  # 64
+        self.sub_dim = 64
+        self.num_codebooks = embed_dim // self.sub_dim
+        # self.sub_dim = embed_dim // self.num_codebooks  # 64
 
         self.embeddings = nn.ModuleList([
             nn.Embedding(vocab_size, self.sub_dim)
@@ -35,6 +36,7 @@ class TokenSequentializer(nn.Module):
         ])
         for emb in self.embeddings:
             emb.weight.data.normal_()
+            emb.weight.requires_grad = False
 
         self.register_buffer(
             'cluster_size',
@@ -114,37 +116,27 @@ class TokenSequentializer(nn.Module):
             ## before last stage
             for stage_i in range(SN):
                 token_len = self.t_scales[stage_i]
-                # print(token_len)
-                f_down = self.down_resampler(f_rest, M=token_len).reshape(-1,self.num_codebooks, self.sub_dim) if stage_i < SN-1 else f_rest.reshape(-1,self.num_codebooks, self.sub_dim)  # B x token_len x D
-
-                # self.console_log_distribution(f_down)
+                f_down = F.interpolate(f_rest.transpose(1, 2), size=token_len, mode='linear').transpose(1, 2).reshape(-1,self.num_codebooks, self.sub_dim) if stage_i < SN-1 else f_rest.reshape(-1,self.num_codebooks, self.sub_dim) # B x token_len x D
+                # f_down = self.down_resampler(f_rest, M=token_len).reshape(-1,self.num_codebooks, self.sub_dim) if stage_i < SN-1 else f_rest.reshape(-1,self.num_codebooks, self.sub_dim)  # B x token_len x D
                 idx_list = []
                 f_hat_list = []
-                
-                # print(f_down.shape)
-
 
                 for k in range(self.num_codebooks):
                     fk = f_down[:, k]  # (B*L, 64)
                     emb = self.embeddings[k]
-
                     dist = (
                         fk.pow(2).sum(dim=1, keepdim=True)
                         - 2 * fk @ emb.weight.T
                         + emb.weight.pow(2).sum(dim=1)
                     )  # (B*L, V)
-
                     idx = torch.argmin(dist, dim=1)
                     idx_list.append(idx)
-
                     if self.training:
                         self._ema_update_multi(k, fk, idx)
-
                     hit_v = idx.bincount(minlength=self.vocab_size).float()
                     vocab_hit_V[k] += hit_v
                     f_hat_list.append(emb(idx))
-                
-                # print(f_hat_list[0].shape)
+
                 f_down_hat = torch.cat(f_hat_list, dim=-1).view(B, token_len, D)  # (B*L, 576)
                 # idx_BL = torch.stack(idx_list, dim=1).view(B, token_len, self.num_codebooks)
 
@@ -161,25 +153,27 @@ class TokenSequentializer(nn.Module):
                 # hit_V = idx_N.bincount(minlength=self.vocab_size).float()  # vocab_size ## not user yet
                 # idx_BL = idx_N.view(B, token_len)  # B x token_len
                 # f_down_hat = self.embedding(idx_BL)  # B x token_len x D
-
-                f_up = self.up_resampler(f_down_hat, M=N) if stage_i < SN-1 else f_down_hat  # B x N x D; the last stage need not up sample
+                f_up = F.interpolate(f_down_hat.transpose(1, 2), size=N, mode='linear').transpose(1, 2) if stage_i < SN-1 else f_down_hat  # B x N x D
+                # f_up = self.up_resampler(f_down_hat, M=N) if stage_i < SN-1 else f_down_hat  # B x N x D; the last stage need not up sample
+                # print(f_up.requires_grad)
                 phi = self.seq_resi[stage_i/(SN-1)] if SN!=1 else nn.Identity()
                 
                 f_resi = phi(f_up) if SN != 1 else f_up
+                # print(f_resi.requires_grad)
                 f_rest = (f_rest - f_resi)        # B x N x D
                 f_hat = (f_hat + f_resi)
 
                 # VQ loss
                 
         
-                mean_vq_loss += F.mse_loss(f_hat.data, feature_map).mul_(self.beta)
+                mean_vq_loss +=F.mse_loss(f_hat, f_no_grad)  +  F.mse_loss(f_hat.data, feature_map).mul_(self.beta)
             
             mean_vq_loss = mean_vq_loss / SN
             f_hat = (f_hat.data-f_no_grad).add_(feature_map)  # straight-through trick
         
             return f_hat, mean_vq_loss, vocab_hit_V
             
-    
+    @torch.no_grad()
     def _ema_update(self, z_e, idx_N: torch.Tensor):
         encodings = F.one_hot(idx_N, self.vocab_size).float() # n x V 
         n_k = encodings.sum(0) # V 
@@ -196,6 +190,7 @@ class TokenSequentializer(nn.Module):
             self.embedding_avg / cluster_size.unsqueeze(1)
         )
 
+    @torch.no_grad()
     def _ema_update_multi(self, k, x, idx):
         onehot = F.one_hot(idx, self.vocab_size).type_as(x)
         self.cluster_size[k].mul_(self.ema_decay).add_(
@@ -215,7 +210,17 @@ class TokenSequentializer(nn.Module):
             self.embedding_avg[k] / cluster_size.unsqueeze(1)
         )
 
+    
+    def idx_to_embedding(self, idx_list):
+        # idx_list : [B, L, num_C]
+        f_hat_list =[]
+        for k in range(self.num_codebooks):
+            f_hat_list.append(self.embeddings[k](idx_list[:,:,k])) # B, L, sub_dim
         
+        return torch.cat(f_hat_list, dim=-1) # B, L, D
+
+        
+
     def console_log_distribution(self, z_e, after_cluster = False):
         z_e_mean = z_e.mean().item()
         z_e_std = z_e.std().item()
@@ -243,26 +248,45 @@ class TokenSequentializer(nn.Module):
             ## before last stage
             for stage_i in range(SN):
                 token_len = self.t_scales[stage_i]
-                f_down = self.down_resampler(f_rest, M=token_len, padding_mask = padding_mask)  # B x token_len x D
-                f_up = self.up_resampler(f_down, M=N)  # B x N x D
+                # f_down = self.down_resampler(f_rest, M=token_len, padding_mask = padding_mask)  # B x token_len x D
+                f_down = F.interpolate(f_rest.transpose(1, 2), size=token_len, mode='linear').transpose(1, 2).reshape(-1,self.num_codebooks, self.sub_dim) if stage_i < SN-1 else f_rest.reshape(-1,self.num_codebooks, self.sub_dim) # B x token_len x D
+
+                idx_list = []
+                f_hat_list = []
+                for k in range(self.num_codebooks):
+                    fk = f_down[:, k]  # (B*L, 64)
+                    emb = self.embeddings[k]
+                    dist = (
+                        fk.pow(2).sum(dim=1, keepdim=True)
+                        - 2 * fk @ emb.weight.T
+                        + emb.weight.pow(2).sum(dim=1)
+                    )  # (B*L, V)
+                    idx = torch.argmin(dist, dim=1)
+                    idx_list.append(idx)
+                    f_hat_list.append(emb(idx))
+                
+
+                id_gt_BLN = torch.stack(idx_list, dim=1).view(B, token_len, self.num_codebooks) # B, L, numC
+                gt_residual_fm.append(id_gt_BLN)
+                f_down_hat = torch.cat(f_hat_list, dim=-1).view(B, token_len, D)  # (B*L, 576)
+                f_up = F.interpolate(f_down_hat.transpose(1, 2), size=N, mode='linear').transpose(1, 2) if stage_i < SN-1 else f_down_hat  # B x N x D
+                
+                # f_up = self.up_resampler(f_down, M=N)  # B x N x D
 
                 # f_down = F.interpolate(f_rest.transpose(1, 2), size=token_len, mode='linear', align_corners=True).transpose(1, 2)  # B x token_len x D
                 # f_up = F.interpolate(f_down.transpose(1, 2), size=N, mode='linear', align_corners=True).transpose(1, 2)  # B x N x D
-
                 phi = self.seq_resi[stage_i/(SN-1)]
                 
-                gt_residual_fm.append(f_down)
-                f_resi = phi(f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
-                f_rest = (f_rest - f_resi).masked_fill(padding_mask.unsqueeze(-1), 0.0)   # B x N x D
-                f_hat = (f_hat + f_resi).masked_fill(padding_mask.unsqueeze(-1), 0.0)
-            ## last stage
-            gt_residual_fm.append(f_rest)
-        return gt_residual_fm
+                f_resi = phi(f_up)
+                f_rest = (f_rest - f_resi)   # B x N x D
+                f_hat = (f_hat + f_resi)
+
+        return gt_residual_fm # List[[B, token_len, numC]]
 
 
 
     # ---------------------- training sar only --------------------------#
-    def generate_different_scale_gt(self, gt_residual_fm:List[torch.Tensor], padding_mask = None) -> torch.Tensor:
+    def generate_scaling_input(self, gt_residual_fm:List[torch.Tensor], padding_mask = None) -> torch.Tensor:
         next_scales = []
         B = gt_residual_fm[0].shape[0]
         D = self.embed_dim
@@ -275,19 +299,15 @@ class TokenSequentializer(nn.Module):
         else:
             token_len_next = self.t_scales[0]
             ## before last stage
-            for ti in range(SN):
-                f_down = gt_residual_fm[ti]
-                f_up = self.up_resampler(f_down, M=N)  # B x N x D
-                f_hat = f_hat + self.seq_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+            for ti in range(SN-1):
+                ti_id_list = gt_residual_fm[ti] # B, token_len, num_C
+                f_down = self.idx_to_embedding(ti_id_list) # B, token_len, D
+                f_up = F.interpolate(f_down.transpose(1, 2), size=N, mode='linear').transpose(1, 2)
+                # f_up = self.up_resampler(f_down, M=N)  # B x N x D
+                f_hat = f_hat + self.seq_resi[ti/(SN-1)](f_up) # B, N, D
                 token_len_next = self.t_scales[ti + 1]
-                next_scales.append(self.down_resampler(f_hat, M=token_len_next, padding_mask = padding_mask))  # B x token_len_next x D
-            
-            ## last stage
-            f_down = gt_residual_fm[-1]
-            f_up = f_down
-            f_hat = f_hat + self.seq_resi[ti/(SN-1)](f_up).masked_fill(padding_mask.unsqueeze(-1), 0.0)
-            next_scales.append(f_hat)  # B x N x D
-
+                rescale_f_hat = F.interpolate(f_hat.transpose(1, 2), size=token_len_next, mode='linear').transpose(1, 2) # B x token_len x D ### [ZHX Warning] : 
+                next_scales.append(rescale_f_hat)  # B x token_len_next x D
 
         return torch.cat(next_scales, dim=1)  # B x (sum of token lens) x D
     
@@ -322,11 +342,14 @@ class TokenSequentializer(nn.Module):
         else:
             N = self.t_scales[-1]
             if stage_i != SN - 1:
-                h = self.seq_resi[stage_i/(SN-1)](self.up_resampler(hs, M=N)).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+                h_up = F.interpolate(hs.transpose(1, 2), size=N, mode='linear').transpose(1, 2)
+                # print(h_up.shape)
+                h = self.seq_resi[stage_i/(SN-1)](h_up)
+                # print(h.shape)
                 f_hat += h
-                return f_hat, self.down_resampler(f_hat, size = self.t_scales[stage_i + 1], padding_mask = padding_mask)
+                return f_hat, F.interpolate(f_hat.transpose(1, 2), size = self.t_scales[stage_i + 1],mode='linear').transpose(1, 2)
             else:
-                h = self.seq_resi[stage_i/(SN-1)](hs).masked_fill(padding_mask.unsqueeze(-1), 0.0)
+                h = self.seq_resi[stage_i/(SN-1)](hs)
                 f_hat += h
                 return f_hat, f_hat
 

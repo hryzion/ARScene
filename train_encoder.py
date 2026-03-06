@@ -44,7 +44,8 @@ def train_model(
     # if use_wandb:
     #     wandb.init(project="VQVAE" ,name=name)
 
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    # print([n for n, p in model.named_parameters() if "emb" not in n])
+    optimizer = optim.Adam([p for p in model.parameters() if p.requires_grad], lr=lr)
     if criterion is None:
         criterion = nn.MSELoss()
 
@@ -89,6 +90,7 @@ def train_model(
             loss = recon_loss + loss_mask + beta * vq_loss
             loss.backward()
             # check_grad_flow(model)
+            # exit()
             optimizer.step()
 
 
@@ -123,22 +125,22 @@ def train_model(
         val_mask_loss =0 
         val_vq_vocab_hits = torch.zeros(model.token_sequentializer.num_codebooks, model.token_sequentializer.vocab_size, device=device)
 
-        with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
-                # room_type = batch['room_type'].to(device)
-                # room_shape = batch['room_shape'].to(device)
-                obj_tokens = batch['obj_tokens'].to(device) # [B, maxN, T]
-                attention_mask = batch['attention_mask'].to(device)
-                mask_logit, recon, vq_loss, vocab_hits = model(obj_tokens, padding_mask=attention_mask)
-                recon_loss, bond_losses, loss_mask = criterion(recon, obj_tokens, attention_mask, mask_logit)
+        # with torch.no_grad():
+        for batch in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
+            # room_type = batch['room_type'].to(device)
+            # room_shape = batch['room_shape'].to(device)
+            obj_tokens = batch['obj_tokens'].to(device) # [B, maxN, T]
+            attention_mask = batch['attention_mask'].to(device)
+            mask_logit, recon, vq_loss, vocab_hits = model(obj_tokens, padding_mask=attention_mask)
+            recon_loss, bond_losses, loss_mask = criterion(recon, obj_tokens, attention_mask, mask_logit)
 
-                loss = recon_loss+ loss_mask + beta * vq_loss
+            loss = recon_loss+ loss_mask + beta * vq_loss
 
-                val_loss += loss.item()
-                val_mask_loss+=loss_mask.item()
-                val_vq_loss += vq_loss.item()
-                val_recon_loss += recon_loss.item()
-                val_vq_vocab_hits += vocab_hits
+            val_loss += loss.item()
+            val_mask_loss+=loss_mask.item()
+            val_vq_loss += vq_loss.item()
+            val_recon_loss += recon_loss.item()
+            val_vq_vocab_hits += vocab_hits
 
         avg_val_loss = val_loss / len(val_loader)
         avg_val_vq = val_vq_loss / len(val_loader)
@@ -283,7 +285,7 @@ if __name__ == '__main__':
     val_dataset.transform = normalizer.transform_atiss
     
    
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
     model = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS,configs=config,num_bottleneck=num_bn, num_recon=num_recon).to(device)
