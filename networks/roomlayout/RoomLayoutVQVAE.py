@@ -305,8 +305,9 @@ class RoomLayoutVQVAE(nn.Module):
         self.encoder_dim = encoder_dim
         self.encoder = SceneLayoutTokenEncoder(encoder_dim, depth=enc_depth, heads=heads,attr_dim=attr_dim, num_bottleneck=num_bottleneck)
         self.quantizer = VectorQuantizer(num_embeddings, token_dim)
+        sub_dim = configs['model'].get('sub_dim', 64)
 
-        self.token_sequentializer = TokenSequentializer(embed_dim=encoder_dim, vocab_size=num_embeddings, resi_ratio=0.5, share_phi=1, ema_decay=float(configs['model']['quant']['ema_decay']), use_prior_cluster=False, use_codebook=self.use_codebook)
+        self.token_sequentializer = TokenSequentializer(embed_dim=encoder_dim, vocab_size=num_embeddings, resi_ratio=0.5, share_phi=1, sub_dim= sub_dim,ema_decay=float(configs['model']['quant']['ema_decay']), use_prior_cluster=False, use_codebook=self.use_codebook)
         self.decoder = SceneLayoutTokenDecoder(encoder_dim, depth=dec_depth, heads=heads,attr_dim=attr_dim, num_recon= num_recon)
         self.hidden2out = Hidden2Out(encoder_dim, n_classes=num_classes, with_extra_fc= False)
         

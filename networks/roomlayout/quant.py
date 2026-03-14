@@ -15,6 +15,7 @@ class TokenSequentializer(nn.Module):
         resi_ratio = 0.5,
         share_phi = 1,  # 0: non-shared, 1: shared, 2: partially-shared 
         use_prior_cluster = False, using_znorm = False, training = True,
+        sub_dim = 64,
         t_scales = [1,5,15,27] #[1, 2, 3, 4, 5, 8, 11, 13 ,16, 25]   # + N (last scale is the full resolution)
     ):
         super().__init__()
@@ -26,7 +27,7 @@ class TokenSequentializer(nn.Module):
         self.down_resampler = DiscreteResampler(d_model=embed_dim, nhead=4)
         self.up_resampler = DiscreteResampler(d_model=embed_dim, nhead=4)
 
-        self.sub_dim = 64
+        self.sub_dim = sub_dim
         self.num_codebooks = embed_dim // self.sub_dim
         # self.sub_dim = embed_dim // self.num_codebooks  # 64
 
