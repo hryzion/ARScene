@@ -171,24 +171,28 @@ if __name__ == '__main__':
     os.makedirs(save_folder,exist_ok=True)
     save_path = os.path.join(save_folder, f"{model_config['type']}.pth")
 
-    wandb.init(project="RoomLayout")
+    dataset_config = config.get('dataset',{})
+    dataset_dir = dataset_config.get('dir','./datasets/processed')
+    dataset_filter = dataset_config.get('filter_fn', '')
+
     
     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else 'cpu')
 
-    train_dataset = ThreeDFrontDataset(npz_dir='./datasets/processed',split='train')
-    val_dataset = ThreeDFrontDataset(npz_dir='./datasets/processed',split='test')
+    train_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='train')
+    val_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='test')
 
     # Normalizer
     normalizer = SceneTokenNormalizer(category_dim=31, rotation_mode='sincos')
-    if os.path.exists('./datasets/processed/normalizer_stats.json'):
-        normalizer.load('./datasets/processed/normalizer_stats.json')
+    if os.path.exists(f'{dataset_dir}/normalizer_stats.json'):
+        normalizer.load(f'{dataset_dir}/normalizer_stats.json')
     else:
         normalizer.fit(train_dataset, mask_key='attention_mask', batch_size=BATCH_SIZE)
-        normalizer.save('./datasets/processed/normalizer_stats.json')
+        normalizer.save(f'{dataset_dir}/normalizer_stats.json')
 
     train_dataset.transform = normalizer.transform
     val_dataset.transform = normalizer.transform
     
+    wandb.init(project="VQ_roomlayout", name=f"VQ_{model_config['type']}_vocab{NUM_EMBEDDINGS}_d{ENCODER_DEPTH}_{dataset_filter}", config=config)
    
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)

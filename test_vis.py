@@ -7,10 +7,11 @@ from datasets.Threed_front_dataset import ThreeDFrontDataset
 from config import parse_arguments
 from utils import decode_obj_tokens_with_mask, visualize_result, pack_scene_json
 import os
+from losses.recon_loss import ObjTokenReconstructionLoss
 
 
 def load_test_dataset():
-    return ThreeDFrontDataset(npz_dir='./datasets/processed',split='test')
+    return ThreeDFrontDataset(npz_dir='./datasets/processed',split='train')
 
 def main():
     import yaml
@@ -60,6 +61,7 @@ def main():
     test_dataset.transform = normalizer.transform
     test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
+    loss_fn = ObjTokenReconstructionLoss()
     # 3. 推理并可视化结果
     with torch.no_grad():
         for batch_idx, batch in enumerate(test_loader):
@@ -69,6 +71,17 @@ def main():
             attention_mask = batch['attention_mask'].to(device)
             # print(attention_mask)
             root, recon, vq_loss, _ = model(obj_tokens, padding_mask=attention_mask)
+            loss, bonded = loss_fn(recon, obj_tokens, attention_mask)
+            print(f"Batch {batch_idx+1}, Loss: {loss.item():.4f}, \n \
+                    Class: {bonded['cs']:.4f}, \n \
+                    Translation: {bonded['translate']:.4f}, \n \
+                    BMax: {bonded['bbox_max']:.4f}, \n \
+                    BMin: {bonded['bbox_min']:.4f}, \n \
+                    Orientation: {bonded['rotation']:.4f}, \n \
+                    Scale: {bonded['scale']:.4f}, \n \
+                    Latent: {bonded['latent']:.4f}, \n \
+                    VQ Loss: {vq_loss.item():.4f}, \n \
+                    ")
             denormalized_recon = normalizer.inverse_transform(recon)
             denormalized_obj_tokens = normalizer.inverse_transform(obj_tokens)
             decoded_recon = decode_obj_tokens_with_mask(denormalized_recon, attention_mask)

@@ -8,7 +8,7 @@ import numpy as np
 TARGET_DIR = './datasets/processed'
 
 
-def preprocess_3d_front():
+def preprocess_3d_front(target_dir = TARGET_DIR,filter_fn=''):
     for scene_json_file in tqdm.tqdm(os.listdir(DATA_DIR)):
         if not scene_json_file.endswith('.json'):
             continue
@@ -22,7 +22,19 @@ def preprocess_3d_front():
         rooms = divide_scene_json_to_rooms(scene_json)
         
         for idx, room in enumerate(rooms):
-            # print(room)
+            room_type = room['roomTypes'][0]
+            if filter_fn =="bedroom":
+                if not ('Bedroom' in room_type or 'Kids' in room_type or 'Elder' in room_type or 'Nanny' in room_type):
+                    continue
+            elif filter_fn =='livingroom':
+                if not ('Living' in room_type):
+                    continue
+            elif filter_fn == 'library':
+                if not ('Library' in room_type):
+                    continue
+            elif filter_fn == 'diningroom':
+                if not('Dining' in room_type):
+                    continue
             room_info, obj_tokens = get_room_attributes(room)
             # Save or process the room_matrix as needed
             # For example, save to a file or database
@@ -32,7 +44,7 @@ def preprocess_3d_front():
             split = random.choices(['train', 'test', 'val'], weights=[7, 2, 1], k=1)[0]
 
             # save room info and obj info into folder
-            room_dir = os.path.join(TARGET_DIR, split, f"{scene_origin}_room{idx}_{room_info['room_type']}")
+            room_dir = os.path.join(target_dir, split, f"{scene_origin}_room{idx}_{room_info['room_type']}")
             os.makedirs(room_dir, exist_ok=True)
             
 
@@ -48,4 +60,14 @@ def preprocess_3d_front():
 
     
 if __name__ == "__main__":
-    preprocess_3d_front()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--filter_fn', type=str,default='', help="room type for training dataset")
+    parser.add_argument('--out_dir', type=str, default='./datasets/processed', help = "output dir")
+
+    args = parser.parse_args()
+    target_dir = args.out_dir
+    if args.filter_fn != '':
+        target_dir+=f'_{args.filter_fn}'
+
+    preprocess_3d_front(target_dir,args.filter_fn)
