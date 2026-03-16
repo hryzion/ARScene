@@ -6,7 +6,7 @@ model:
   decoder_depth: 4
   num_recon: 25
   num_heads: 8
-  num_embeddings: 1024
+  num_embeddings: 128
   bottleneck : residual-vae
   use_codebook: true
   quant:
@@ -28,4 +28,4 @@ dataset:
   padded_length: 27
 
 save:
-  save_folder: ./pretrained/vqvae/residual_vq_bedroom_wo_lat/
+  save_folder: ./pretrained/vqvae/residual_vq_bedroom_wo_lat_codebook128/

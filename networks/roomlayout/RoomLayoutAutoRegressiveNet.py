@@ -34,7 +34,7 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
                 config,
                 device,
                 depth = 16, embed_dim = 128, num_heads = 16, mlp_ratio=4., drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
-                shared_aln =False, cond_drop_rate=0.4,norm_eps=1e-6,
+                shared_aln =False, cond_drop_rate=0.6,norm_eps=1e-6,
                 attn_l2_norm = False,
                 t_scales = [1, 5, 15, 27],
                 use_prior_cluster = False
@@ -148,6 +148,7 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
 
 
     def forward(self, x_wo_first, text_desc_c, room_mask_c, key_padding_mask = None):
+        # print(room_mask_c.shape)
         bg, ed =0, self.L
         B = x_wo_first.shape[0] # B, sumL-1, D
         # print("x without first_len:\n", x_wo_first)

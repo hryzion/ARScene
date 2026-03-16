@@ -265,16 +265,17 @@ if __name__ == '__main__':
     dataset_config = config.get('dataset', {})
     dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
     dataset_filter = dataset_config.get('filter_fn',"all")
+    dataset_num_class = dataset_config.get('num_class', 31)
     
     dataset_padded_length = dataset_config.get('padded_length', None)
     if not dataset_config.get('use_objlat'):
         dataset_dir += '_wo_lat'
 
-    train_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='train',padded_length=dataset_padded_length)
-    val_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='test',padded_length=dataset_padded_length)
+    train_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='train',padded_length=dataset_padded_length,num_cate=dataset_num_class)
+    val_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='test',padded_length=dataset_padded_length,num_cate=dataset_num_class)
 
     # Normalizer
-    normalizer = SceneTokenNormalizer(category_dim=31, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
+    normalizer = SceneTokenNormalizer(category_dim=dataset_num_class, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
     if os.path.exists(f'{dataset_dir}/normalizer_stats.json'):
         normalizer.load(f'{dataset_dir}/normalizer_stats.json')
     else:
@@ -288,8 +289,8 @@ if __name__ == '__main__':
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
-    model = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS,configs=config,num_bottleneck=num_bn, num_recon=num_recon).to(device)
-    criterion = ObjTokenReconstructionLoss(configs=dataset_config)
+    model = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS,configs=config,num_bottleneck=num_bn, num_recon=num_recon, num_classes=dataset_num_class).to(device)
+    criterion = ObjTokenReconstructionLoss(num_categories = dataset_num_class,configs=dataset_config)
 
     # model.load_state_dict(torch.load(f'{save_path}', map_location=device))
     # model.to(device)

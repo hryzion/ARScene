@@ -41,14 +41,14 @@ dataset:
   padded_length: 27
 
 super_parameters:
-  epochs: 2000
+  epochs: 4000
   batch_size: 128
   learning_rate: 0.0001
   weight_decay: 0.00001
   cuda: 0
 
 save:
-  save_folder: ./pretrained/sceneGPT/depth_16_worddim_512_livingroom_wo_lat
+  save_folder: ./pretrained/sceneGPT/
 
 text_condition: false
 room_mask_condition: true

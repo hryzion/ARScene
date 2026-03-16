@@ -1,0 +1,81 @@
+dataset:
+  use_objlat: False
+  filter_fn: bedroom
+  dataset_dir: ./datasets/atiss_bedroom
+  attr_dim: 43
+  padded_length: 27
+  num_class: 31
+
+super_parameters:
+  epochs: 5000
+  batch_size: 128
+  learning_rate: 0.0002
+  weight_decay: 0.00001
+  cuda: 0
+
+save:
+  save_folder: ./pretrained/diffuscene/exp0
+
+
+network: 
+  type: diffuscene
+  net_type: "unet1d"
+  objectness_dim: 0
+  class_dim: 33
+  translation_dim: 3
+  point_dim: 40
+  size_dim: 3
+  angle_dim: 1
+  objfeat_dim: 0
+  learnable_embedding: true
+  instance_condition: true
+  instance_emb_dim: 128
+  latent_dim: 64
+  sample_num_points: 27 # max_length 
+  diffusion_kwargs:
+        schedule_type: 'linear'
+        beta_start: 0.0001
+        beta_end: 0.02
+        time_num: 1000 
+        loss_type: 'mse'
+        model_mean_type: 'eps'
+        model_var_type: 'fixedsmall'
+        loss_separate: true
+        # calculate iou loss
+        loss_iou: true
+        train_stats_file: "/mnt/disk-1/zhx24/public_code/DiffuScene/datasets/3d_front_processed/bedrooms_objfeats_32_64/dataset_stats.txt"
+  net_kwargs:
+        dim: 512
+        dim_mults: [1, 1, 1, 1]
+        channels: 40
+        objectness_dim: 0
+        class_dim: 33
+        angle_dim: 1
+        objfeat_dim: 0
+        context_dim: 64
+        instanclass_dim: 128 
+        seperate_all: true  
+
+training:
+    splits: ["train", "val"]
+    epochs: 60000
+    steps_per_epoch: 500
+    batch_size: 128
+    save_frequency: 2000
+    max_grad_norm: 10
+    # optimizer
+    optimizer: Adam
+    weight_decay: 0.0
+    # schedule
+    schedule: 'step'
+    lr: 0.0002
+    lr_step: 10000
+    lr_decay: 0.5
+
+
+logger:
+    type: "wandb"
+    project: "my_diffuscene"
+
+loss:
+  beta: 0.25

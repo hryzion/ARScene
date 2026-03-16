@@ -6,7 +6,7 @@ model:
   decoder_depth: 4
   num_recon: 25
   num_heads: 8
-  num_embeddings: 128
+  num_embeddings: 1024
   bottleneck : residual-vae
   use_codebook: true
   quant:
@@ -14,18 +14,19 @@ model:
     ema_decay: 0.95
 
 super_parameters:
-  epochs: 2000
+  epochs: 4000
   batch_size: 128
   learning_rate: 0.0001
   weight_decay: 0.00001
   cuda: 0
 
 dataset:
-  filter_fn: livingroom
-  dataset_dir: ./datasets/processed_livingroom
-  use_objlat: false
+  filter_fn: bedroom
+  dataset_dir: ./datasets/diffuscene_process_bedroom
+  use_objlat: False
   attr_dim: 43
   padded_length: 27
+  num_class: 23
 
 save:
-  save_folder: ./pretrained/vqvae/residual_vq_livingroom_wo_lat_codebook128/
+  save_folder: ./pretrained/vqvae/residual_vq_bedroom_wo_lat_diffu/

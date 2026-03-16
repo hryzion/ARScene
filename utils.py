@@ -234,13 +234,6 @@ def check_grad_flow(model):
                 print(f'[OK] {name} | mean={p.grad.abs().mean():.2e}')
 
 
-
-
-
-
-
-
-
 def sample_multicodebook_topk_topp(logits_BLKV: torch.Tensor, top_k: int = 0, top_p: float = 0.0, rng=None, num_samples=1):
     B, L, K, V = logits_BLKV.shape
     z = torch.zeros(B, L, K, dtype=torch.long, device=logits_BLKV.device)
@@ -438,24 +431,41 @@ def embed_obj_token(obj, use_objlat=True,atiss=False):
     )) if use_objlat else np.concatenate((
         cs, translate, size, rotation
     ))
+    
+def adjust_size_by_rotation(size: np.ndarray, rotation: float, tol=0.1):
+    """
+    如果 rotation 接近 ±pi/2，则交换 size[0] 和 size[2]
+    size = [sx, sy, sz]，其中 sy 为高度不变
+    """
+    r = (rotation+ np.pi) % np.pi  # 归一化到 [0, pi)
 
+    if abs(r - np.pi / 2) < tol:
+        size = size.copy()
+        size[[0, 2]] = size[[2, 0]]  # 交换 x,z
 
-def decode_obj_token(obj_token, use_objlat = True):
+    return size
+
+def decode_obj_token(obj_token, use_objlat = True, num_classes = 31):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
     # print(obj_token.shape)
-    cs = obj_token[:len(THREED_FRONT_CATEGORY)]
-    translate = obj_token[len(THREED_FRONT_CATEGORY):len(THREED_FRONT_CATEGORY) + 3]
-    size = obj_token[len(THREED_FRONT_CATEGORY) + 3:len(THREED_FRONT_CATEGORY) + 6]
-    rotation = obj_token[len(THREED_FRONT_CATEGORY) + 6:len(THREED_FRONT_CATEGORY) + 7]
-    latent = obj_token[len(THREED_FRONT_CATEGORY)+7:]
-
+    # print(categorylen)
+    cs = obj_token[:num_classes]
+    # print(cs)
+    translate = obj_token[num_classes:num_classes + 3]
+    # print(translate)
+    size = obj_token[num_classes + 3:num_classes + 6]
+    # print(size)
+    rotation = obj_token[num_classes + 6:num_classes + 7]
+    latent = obj_token[num_classes+7:]
     bbox_max = translate+size/2
     bbox_min = translate-size/2
+    size = adjust_size_by_rotation(size, rotation[0])
 
-    coarse_semantic = THREED_FRONT_CATEGORY[np.argmax(cs)]
-    q_size =  abs(bbox_max - bbox_min)
-    model_id = get_modelid_by_latent_and_size(latent, q_size, coarse_semantic) if use_objlat else get_modelid_by_size(q_size, coarse_semantic)
-
+    coarse_semantic = THREED_FRONT_CATEGORY[np.argmax(cs)] # WARNING : 这里假设输入的 obj_token 已经过 one-hot 编码，并且类别维度在前 num_classes 个维度
+    # print(coarse_semantic)
+    q_size =  abs(size)
+    model_id, model_size = get_modelid_by_latent_and_size(latent, q_size, coarse_semantic) if use_objlat else get_modelid_by_size(q_size, coarse_semantic)
+    scale = model_size/size
     # print(rotation)
     return {
         'coarseSemantic': coarse_semantic,
@@ -466,7 +476,7 @@ def decode_obj_token(obj_token, use_objlat = True):
         'translate': translate.tolist(),
         'rotate':[0,float(rotation[0]),0],
         'orient': float(rotation[0]),
-        'scale': [1,1,1],
+        'scale': scale.tolist(),
         'latent' : latent.tolist(),
         'modelId': model_id,
         'inDatabase': model_id is not None
@@ -487,7 +497,7 @@ def get_modelid_by_size(q_size, category):
         mses_size.append(np.sum((q_size - model_size)**2))
 
     ind = np.argsort(mses_size)
-    return model_ids[ind[0]]
+    return model_ids[ind[0]], MODEL_LATENTS[category][model_ids[ind[0]]]['size']
 
 
 
@@ -510,9 +520,9 @@ def get_modelid_by_latent_and_size(q_latent, q_size, category):
 
     ind = np.lexsort((mses_latent, mses_size))
 
-    return model_ids[ind[0]]
+    return model_ids[ind[0]],MODEL_LATENTS[category][model_ids[ind[0]]]['size']
 
-def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask, use_objlat=True):
+def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask, use_objlat=True, num_classes = 31):
     """
     batch_obj_tokens: [B, N, token_dim], torch.Tensor 或 numpy array
     attention_mask: [B, N], bool tensor，True 表示有效token
@@ -527,7 +537,7 @@ def decode_obj_tokens_with_mask(batch_obj_tokens, attention_mask, use_objlat=Tru
         decoded_b = []
         for n in range(N):
             if not attention_mask[b, n]:
-                decoded_b.append(decode_obj_token(batch_obj_tokens[b, n], use_objlat))
+                decoded_b.append(decode_obj_token(batch_obj_tokens[b, n], use_objlat, num_classes))
             else:
                 # mask为False的token忽略或填None，视需要而定
                 pass
@@ -663,19 +673,19 @@ def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = N
             )
             ax.add_patch(rect)
 
-            ax.text(
-                x_min + width / 2,
-                z_min + height / 2,
-                cat,
-                color='black',        # 文字颜色，可以根据背景调整
-                ha='center',          # 水平居中
-                va='center',          # 垂直居中
-                fontsize=8,           # 字体大小
-                fontweight='bold',    # 加粗（可选）
-                alpha=0.8             # 透明度（可选）
-            )
+        #     ax.text(
+        #         x_min + width / 2,
+        #         z_min + height / 2,
+        #         cat,
+        #         color='black',        # 文字颜色，可以根据背景调整
+        #         ha='center',          # 水平居中
+        #         va='center',          # 垂直居中
+        #         fontsize=8,           # 字体大小
+        #         fontweight='bold',    # 加粗（可选）
+        #         alpha=0.8             # 透明度（可选）
+        #     )
 
-        ax.grid(True)
+        # ax.grid(True)
 
     if raw_data is not None:
         for idx, scene in enumerate(raw_data):
@@ -711,19 +721,19 @@ def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = N
                     alpha=0.5
                 )
                 ax.add_patch(rect)
-                ax.text(
-                    x_min + width / 2,
-                    z_min + height / 2,
-                    cat,
-                    color='black',        # 文字颜色，可以根据背景调整
-                    ha='center',          # 水平居中
-                    va='center',          # 垂直居中
-                    fontsize=8,           # 字体大小
-                    fontweight='bold',    # 加粗（可选）
-                    alpha=0.8             # 透明度（可选）
-                )
+            #     ax.text(
+            #         x_min + width / 2,
+            #         z_min + height / 2,
+            #         cat,
+            #         color='black',        # 文字颜色，可以根据背景调整
+            #         ha='center',          # 水平居中
+            #         va='center',          # 垂直居中
+            #         fontsize=8,           # 字体大小
+            #         fontweight='bold',    # 加粗（可选）
+            #         alpha=0.8             # 透明度（可选）
+            #     )
 
-            ax.grid(True)
+            # ax.grid(True)
 
     plt.tight_layout()
     if save_dir is not None:
@@ -788,6 +798,9 @@ THREED_FRONT_COLOR  = [
     (0.654, 0.364, 0.270),
     (0.000, 0.620, 0.451),
 ]
+
+
+
 
 CRASHED_ROOM = {
     'c4eb86a1-f886-4f85-9127-19a4e4d6e45a.json',

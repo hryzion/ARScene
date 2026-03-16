@@ -14,8 +14,8 @@ from torchvision import models
 
 
 
-def load_test_dataset(dataset_dir,dataset_padded_length):
-    return ThreeDFrontDataset(npz_dir=f'{dataset_dir}',split='test',padded_length = dataset_padded_length)
+def load_test_dataset(dataset_dir,dataset_padded_length, num_classes=31):
+    return ThreeDFrontDataset(npz_dir=f'{dataset_dir}',split='train',padded_length = dataset_padded_length, num_cate=num_classes)
 
 def main():
     import yaml
@@ -72,7 +72,7 @@ def main():
         yaml.dump(config, f, allow_unicode=True)
 
     save_path = os.path.join(save_folder, f"{model_config['type']}_{args.tag}.pth")
-    os.makedirs(save_folder, exist_ok=True)
+    # os.makedirs(save_folder, exist_ok=True)
     
     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else 'cpu')
 
@@ -82,21 +82,22 @@ def main():
     dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
     dataset_padded_length = dataset_config.get('padded_length', None)
     dataset_filter = dataset_config.get('filter_fn',"all")
+    dataset_num_class = dataset_config.get('num_class', 31)
 
     if not dataset_config.get('use_objlat'):
         dataset_dir += '_wo_lat'
     obj_feat = 64 if dataset_config['use_objlat'] else 0
-    normalizer = SceneTokenNormalizer(category_dim=31,obj_feat=obj_feat, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
+    normalizer = SceneTokenNormalizer(category_dim=dataset_num_class,obj_feat=obj_feat, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
     if os.path.exists(f'{dataset_dir}/normalizer_stats.json'):
         normalizer.load(f'{dataset_dir}/normalizer_stats.json')
     else:
         raise FileNotFoundError("Normalizer stats file not found. Please preprocess the dataset first.")
 
-    test_dataset = load_test_dataset(dataset_dir,dataset_padded_length)
+    test_dataset = load_test_dataset(dataset_dir,dataset_padded_length,dataset_num_class)
     test_dataset.transform = normalizer.transform_atiss
-    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
+    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=True, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
-    ae_encoder = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, test_mode=True, configs=config,num_bottleneck=num_bn, num_recon=num_recon).to(device)
+    ae_encoder = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, test_mode=True, configs=config,num_bottleneck=num_bn, num_recon=num_recon, num_classes=dataset_num_class).to(device)
     ae_encoder.load_state_dict(torch.load(f'{encoder_pretrained_path}', map_location=device))
 
     feat_extractor = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1).to(device)
@@ -153,9 +154,9 @@ def main():
             # print(F.mse_loss(x_pred[0,0] ,residual_fm_gt[0,0]))
 
             # exit()
-            infer_room, infer_mask_prob,_ = sar.auto_regressive_inference(B = 4, test_desc=text_desc, room_mask=None,cfg=0,top_k=900, top_p=0.95)
+            infer_room, infer_mask_prob,_ = sar.auto_regressive_inference(B = 4, test_desc=text_desc, room_mask=room_shape,cfg=0,top_k=900, top_p=0.9)
             # print(infer_mask.shape)
-            infer_valid_mask = (infer_mask_prob > 0.5).bool().squeeze(-1)
+            infer_valid_mask = (infer_mask_prob > 0.1).bool().squeeze(-1)
 
             # print(infer_valid_mask)
             # root, recon, vq_loss, _ = sar.vae(obj_tokens, padding_mask=attention_mask)
@@ -166,8 +167,8 @@ def main():
             denormalized_obj_tokens = normalizer.invert_transform_atiss(obj_tokens)
             # denormalized_recon = normalizer.inverse_transform(recon_from_residual)
 
-            decoded_infer = decode_obj_tokens_with_mask(denormalized_infer, infer_valid_mask, use_objlat=dataset_config['use_objlat'])
-            decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'])
+            decoded_infer = decode_obj_tokens_with_mask(denormalized_infer, infer_valid_mask, use_objlat=dataset_config['use_objlat'], num_classes=dataset_num_class)
+            decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'],  num_classes=dataset_num_class)
             # decoded_recon  = decode_obj_tokens_with_mask(denormalized_recon, attention_mask, use_objlat=dataset_config['use_objlat'])
 
             test_scene_jsons = pack_scene_json(decoded_infer,room_name)

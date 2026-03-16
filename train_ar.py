@@ -157,10 +157,31 @@ if __name__ == "__main__":
 
     encoder_pretrained_path = encoder_config.get('pretrained_path', None)
 
+
+
+    # --------------------- dataset -----------------------
+    dataset_config = config.get('dataset', {})
+    dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
+    dataset_padded_length = dataset_config.get('padded_length', None)
+    dataset_filter = dataset_config.get('filter_fn',"all")
+    dataset_num_class = dataset_config.get('num_class', 31)
+
+    if not dataset_config.get('use_objlat'):
+        dataset_dir += '_wo_lat'
+
     # --------------------- save -----------------------
 
     save_config = config.get('save', {})
     save_folder = save_config.get('save_folder',"./pretrained/sceneautoregressive/")
+    tag = f"{dataset_filter}"+"_depth"+str(sar_depth)+"_worddim"+str(word_dim)+f'_vocab{NUM_EMBEDDINGS}'
+    if not config.get("text_condition", False):
+        tag+='_wo_textc'
+    if config.get('dataset', {}).get('use_objlat', True):
+        tag+='_lat64'
+    else:
+        tag+='_wo_lat'
+    save_folder = os.path.join(save_folder, tag)
+    config['save']['save_folder'] = save_folder
     os.makedirs(save_folder,exist_ok=True)
 
     with open(os.path.join(save_folder, 'config.yaml'), "w", encoding="utf-8") as f:
@@ -169,23 +190,15 @@ if __name__ == "__main__":
     save_path = os.path.join(save_folder, f"{model_config['type']}.pth")
     os.makedirs(save_folder, exist_ok=True)
     
+
+
+
     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else 'cpu')
-
-
-    # --------------------- dataset -----------------------
-    dataset_config = config.get('dataset', {})
-    dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
-    dataset_padded_length = dataset_config.get('padded_length', None)
-    dataset_filter = dataset_config.get('filter_fn',"all")
-
-    if not dataset_config.get('use_objlat'):
-        dataset_dir += '_wo_lat'
-
-    train_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='train',padded_length=dataset_padded_length)
-    val_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='test',padded_length=dataset_padded_length)
+    train_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='train',padded_length=dataset_padded_length, num_cate=dataset_num_class)
+    val_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='test',padded_length=dataset_padded_length, num_cate=dataset_num_class)
 
     # Normalizer
-    normalizer = SceneTokenNormalizer(category_dim=31, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
+    normalizer = SceneTokenNormalizer(category_dim=dataset_num_class, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
     if os.path.exists(f'{dataset_dir}/normalizer_stats.json'):
         normalizer.load(f'{dataset_dir}/normalizer_stats.json')
     else:
@@ -198,7 +211,7 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
-    ae_encoder = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, test_mode=True, configs=config,num_bottleneck=num_bn, num_recon=num_recon).to(device)
+    ae_encoder = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, test_mode=True, configs=config,num_bottleneck=num_bn, num_recon=num_recon,num_classes=dataset_num_class).to(device)
 
     # ae_encoder = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, test_mode=True, configs=config).to(device)
     ae_encoder.load_state_dict(torch.load(f'{encoder_pretrained_path}', map_location=device))

@@ -1,15 +1,20 @@
 dataset:
   use_objlat: False
+  filter_fn: bedroom
+  dataset_dir: ./datasets/atiss_bedroom
+  attr_dim: 43
+  padded_length: 27
+  num_class: 31
 
 super_parameters:
-  epochs: 5000
+  epochs: 1000
   batch_size: 128
   learning_rate: 0.0001
   weight_decay: 0.00001
   cuda: 0
 
 save:
-  save_folder: ./pretrained/atiss/exp0
+  save_folder: ./pretrained/atiss/
 
 
 network: 
@@ -26,5 +31,20 @@ network:
   n_mixtures: 10
   use_room_mask_as_features: true
 
+training:
+    splits: ["train", "val"]
+    epochs: 10000
+    steps_per_epoch: 500
+    batch_size: 128
+    save_frequency: 50
+    optimizer: Adam
+    lr: 0.0001
+    weight_decay: 0.0
+
 loss:
   beta: 0.25
+
+
+logger:
+    type: "wandb"
+    project: "autoregressive_transformer"

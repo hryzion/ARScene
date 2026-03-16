@@ -152,10 +152,9 @@ if __name__ == "__main__":
     parser.add_argument('--out_dir', type=str, default='./datasets/processed', help = "output dir")
     args = parser.parse_args()
     target_dir = args.out_dir
-    if args.atiss:
-        target_dir = './datasets/atiss'
-    if not args.use_objlat:
-        target_dir += "_wo_lat"
+
     if args.filter_fn != '':
         target_dir+=f'_{args.filter_fn}'
+    if not args.use_objlat:
+        target_dir += "_wo_lat"
     preprocess_3d_front(target_dir, args.use_objlat, args.get_stats, args.atiss, args.filter_fn)

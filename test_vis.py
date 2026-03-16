@@ -10,8 +10,8 @@ import os
 from losses.recon_loss import ObjTokenReconstructionLoss
 
 
-def load_test_dataset(dataset_dir, dataset_padded_length):
-    return ThreeDFrontDataset(npz_dir=f'{dataset_dir}',split='test', padded_length=dataset_padded_length)
+def load_test_dataset(dataset_dir, dataset_padded_length, num_classes=31):
+    return ThreeDFrontDataset(npz_dir=f'{dataset_dir}',split='test', padded_length=dataset_padded_length, num_cate=num_classes)
 
 def main():
     import yaml
@@ -47,18 +47,19 @@ def main():
     dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
     dataset_filter = dataset_config.get('filter_fn',"all")
     dataset_padded_length = dataset_config.get('padded_length', None)
+    dataset_num_class = dataset_config.get('num_class', 31)
 
     if not dataset_config.get('use_objlat'):
         dataset_dir += '_wo_lat'
     # 1. 初始化模型并加载权重
-    model = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, configs=config, num_bottleneck=num_bn, num_recon=num_recon).to(device)
+    model = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, configs=config, num_bottleneck=num_bn, num_recon=num_recon,num_classes=dataset_num_class).to(device)
 
     model.load_state_dict(torch.load(f'{save_path}', map_location=device))
     model.to(device)
     model.eval()
 
     obj_feat = 64 if dataset_config['use_objlat'] else 0
-    normalizer = SceneTokenNormalizer(category_dim=31,obj_feat=obj_feat, rotation_mode='sincos')
+    normalizer = SceneTokenNormalizer(category_dim=dataset_num_class,obj_feat=obj_feat, rotation_mode='sincos')
     if os.path.exists(f'{dataset_dir}/normalizer_stats.json'):
         normalizer.load(f'{dataset_dir}/normalizer_stats.json')
     else:
@@ -66,11 +67,11 @@ def main():
 
 
     # 2. 准备测试集和 DataLoader
-    test_dataset = load_test_dataset(dataset_dir, dataset_padded_length=dataset_padded_length)
+    test_dataset = load_test_dataset(dataset_dir, dataset_padded_length=dataset_padded_length, num_classes=dataset_num_class)
     test_dataset.transform = normalizer.transform_atiss
     test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
-    loss_fn = ObjTokenReconstructionLoss(configs=dataset_config)
+    loss_fn = ObjTokenReconstructionLoss(num_categories = dataset_num_class, configs=dataset_config)
 
     # 3. 推理并可视化结果
     total_loss = 0.0
@@ -97,8 +98,9 @@ def main():
         # print(recon.shape)
         denormalized_recon = normalizer.invert_transform_atiss(recon)
         denormalized_obj_tokens = normalizer.invert_transform_atiss(obj_tokens)
-        decoded_recon = decode_obj_tokens_with_mask(denormalized_recon, attention_mask, use_objlat=dataset_config['use_objlat'])
-        decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'])
+        decoded_recon = decode_obj_tokens_with_mask(denormalized_recon, attention_mask, use_objlat=dataset_config['use_objlat'], num_classes=dataset_num_class)
+        # print()
+        decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'],num_classes=dataset_num_class)
         test_scene_jsons = pack_scene_json(decoded_recon,room_name)
         for i, scene_json in enumerate(test_scene_jsons):
             save_path = os.path.join(f'{save_folder}/scene', f'{room_name[i]}_recon.json')

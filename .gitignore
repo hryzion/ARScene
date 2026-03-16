@@ -11,3 +11,7 @@ datasets/processed_wi_lat
 wandb/
 pretrained/
 networks/drifting/sanity_check
+*.tar.gz
+test/
+real_scene/
+datasets/diffuscene_process*

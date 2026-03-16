@@ -48,6 +48,7 @@ class ObjTokenReconstructionLoss(nn.Module):
         start = self.num_categories
         translate_pred = pred[:, :, start:start+3]
         translate_target = target[:, :, start:start+3]
+        # print(translate_pred, translate_target)
 
         start += 3
         size_pred = pred[:,:,start:start+3]
@@ -89,6 +90,7 @@ class ObjTokenReconstructionLoss(nn.Module):
 
         
         loss_translate = (self.mse_loss(translate_pred, translate_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
+        # print(loss_translate)
         loss_size = (self.mse_loss(size_pred, size_target).mean(dim = -1) * mask).sum() / (valid_tokens + 1e-8)
         loss_rotation = (self.mse_loss(rotation_pred, rotation_target).mean(dim = -1) *mask ).sum() / (valid_tokens + 1e-8)
         loss_latent = (self.mse_loss(latent_pred, latent_target).mean(dim = -1) *mask ).sum() / (valid_tokens + 1e-8) if self.use_objlat else 0
