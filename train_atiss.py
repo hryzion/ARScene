@@ -60,14 +60,15 @@ def train_model(
             move_all_thing_to(sample, device)
             loss = train_on_batch(model, optimizer=optimizer, sample_params=sample, config=None)
             StatsLogger.instance().print_progress(epoch+1, b+1, loss)
+        StatsLogger.instance().clear()
 
         model.eval()
         with torch.no_grad():
-            for sample in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
+            for b,sample in enumerate(val_loader):
                 move_all_thing_to(sample, device)
                 loss = validate_on_batch(model, sample_params=sample,config=None)
                 StatsLogger.instance().print_progress(-1, b+1, loss)
-
+            StatsLogger.instance().clear()
 
         if epoch % 200 == 0:
             torch.save(model.state_dict(), f'{save_path[:-4]}_{epoch}.pth')

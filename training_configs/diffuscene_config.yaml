@@ -1,20 +1,20 @@
 dataset:
   use_objlat: False
-  filter_fn: bedroom
-  dataset_dir: ./datasets/atiss_bedroom
+  filter_fn: livingroom
+  dataset_dir: ./datasets/atiss_livingroom
   attr_dim: 43
   padded_length: 27
   num_class: 31
 
 super_parameters:
-  epochs: 5000
+  epochs: 3000
   batch_size: 128
   learning_rate: 0.0002
   weight_decay: 0.00001
   cuda: 0
 
 save:
-  save_folder: ./pretrained/diffuscene/exp0
+  save_folder: ./pretrained/diffuscene/
 
 
 network: 
@@ -23,9 +23,9 @@ network:
   objectness_dim: 0
   class_dim: 33
   translation_dim: 3
-  point_dim: 40
+  point_dim: 41
   size_dim: 3
-  angle_dim: 1
+  angle_dim: 2
   objfeat_dim: 0
   learnable_embedding: true
   instance_condition: true
@@ -38,19 +38,19 @@ network:
         beta_end: 0.02
         time_num: 1000 
         loss_type: 'mse'
-        model_mean_type: 'eps'
+        model_mean_type: 'v' # eps x0
         model_var_type: 'fixedsmall'
         loss_separate: true
         # calculate iou loss
         loss_iou: true
-        train_stats_file: "/mnt/disk-1/zhx24/public_code/DiffuScene/datasets/3d_front_processed/bedrooms_objfeats_32_64/dataset_stats.txt"
+        train_stats_file: "/mnt/disk-1/zhx24/public_code/DiffuScene/datasets/3d_front_processed/livingrooms_objfeats_32_64/dataset_stats.txt"
   net_kwargs:
         dim: 512
         dim_mults: [1, 1, 1, 1]
-        channels: 40
+        channels: 41
         objectness_dim: 0
         class_dim: 33
-        angle_dim: 1
+        angle_dim: 2
         objfeat_dim: 0
         context_dim: 64
         instanclass_dim: 128 

@@ -8,7 +8,7 @@ from networks.roomlayout.RoomLayoutVQVAE import RoomLayoutVQVAE
 from networks.roomlayout.RoomLayoutAutoRegressiveNet import RoomLayoutAutoRegressiveNet
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 from config import parse_arguments
-from utils import decode_obj_tokens_with_mask, visualize_result, pack_scene_json
+from utils import decode_obj_tokens_with_mask, visualize_result, pack_scene_json,visualize_token_grid
 import os
 from torchvision import models
 import matplotlib.pyplot as plt
@@ -190,6 +190,10 @@ def main():
                 # print(f'Saved reconstructed scene JSON to {save_path}')
             # 这里调用可视化函数，可以传入输入和输出
             visualize_result(decoded_infer, raw_data=None, room_name=room_name, save_dir=f'{save_folder}/intermediate/topdown_infer/{args.tag}',processing=True)
+            print(len(decoded_infer))
+            for sid, infer_scene in enumerate(decoded_infer):
+                for tid,tokens in enumerate(intermediate_tokens):
+                    visualize_token_grid(tokens,room_name=room_name[sid], save_dir=f'{save_folder}/intermediate/token_grid/{args.tag}', sid=tid)
             # visualize_result(decoded_recon, raw_data=decoded_raw,room_name=room_name, save_dir=f'{save_folder}/topdown_recon')
 
             # if (batch_idx + 1) % 20 == 0:
@@ -197,6 +201,7 @@ def main():
             #         for k in range(sar.vae_token_sequentializer.num_codebooks):
             #             plot_vocab_distribution(token_counter,st,k,f'{save_folder}/intermediate/tokens')
             print(f"Processed batch {batch_idx+1}/{len(test_loader)}")
+            exit()
 
                 
 if __name__ == "__main__":

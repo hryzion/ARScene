@@ -7,6 +7,8 @@ def parse_arguments():
     parser.add_argument('--cuda' ,type=int, default=0)
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--tag', type=str, default="latest")
+    parser.add_argument('--scene', type=str, default="none")
+    parser.add_argument('--num', type=int, default=1000)
     args = parser.parse_args()
     return args
 

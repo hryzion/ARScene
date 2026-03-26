@@ -673,19 +673,20 @@ def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = N
             )
             ax.add_patch(rect)
 
-        #     ax.text(
-        #         x_min + width / 2,
-        #         z_min + height / 2,
-        #         cat,
-        #         color='black',        # 文字颜色，可以根据背景调整
-        #         ha='center',          # 水平居中
-        #         va='center',          # 垂直居中
-        #         fontsize=8,           # 字体大小
-        #         fontweight='bold',    # 加粗（可选）
-        #         alpha=0.8             # 透明度（可选）
-        #     )
+            # ax.text(
+            #     x_min + width / 2,
+            #     z_min + height / 2,
+            #     cat,
+            #     color='black',        # 文字颜色，可以根据背景调整
+            #     ha='center',          # 水平居中
+            #     va='center',          # 垂直居中
+            #     fontsize=8,           # 字体大小
+            #     fontweight='bold',    # 加粗（可选）
+            #     alpha=0.8             # 透明度（可选）
+            # )
 
-        # ax.grid(True)
+        ax.grid(True)
+        # ax.axis('off')
 
     if raw_data is not None:
         for idx, scene in enumerate(raw_data):
@@ -721,25 +722,69 @@ def visualize_result(recon_data, raw_data = None, room_name = None, save_dir = N
                     alpha=0.5
                 )
                 ax.add_patch(rect)
-            #     ax.text(
-            #         x_min + width / 2,
-            #         z_min + height / 2,
-            #         cat,
-            #         color='black',        # 文字颜色，可以根据背景调整
-            #         ha='center',          # 水平居中
-            #         va='center',          # 垂直居中
-            #         fontsize=8,           # 字体大小
-            #         fontweight='bold',    # 加粗（可选）
-            #         alpha=0.8             # 透明度（可选）
-            #     )
+                # ax.text(
+                #     x_min + width / 2,
+                #     z_min + height / 2,
+                #     cat,
+                #     color='black',        # 文字颜色，可以根据背景调整
+                #     ha='center',          # 水平居中
+                #     va='center',          # 垂直居中
+                #     fontsize=8,           # 字体大小
+                #     fontweight='bold',    # 加粗（可选）
+                #     alpha=0.8             # 透明度（可选）
+                # )
 
-            # ax.grid(True)
+            ax.grid(True)
+            # ax.axis('off')
+
 
     plt.tight_layout()
     if save_dir is not None:
         os.makedirs(save_dir, exist_ok=True)
         plt.savefig(f"{save_dir}/{batch_idx}_{room_name[0]}.png", bbox_inches='tight')
     plt.close(fig)
+
+
+def visualize_token_grid(token_ids, grid_size=32, room_name = None, save_dir=None, sid = 0, seed=None):
+    """
+    token_ids: torch.Tensor or list, shape [N]
+    grid_size: 默认32，对应1024个token
+    """
+
+    if seed is not None:
+        np.random.seed(seed)
+
+    # 转成 numpy
+    if isinstance(token_ids, torch.Tensor):
+        token_ids = token_ids.flatten().detach().cpu().numpy()
+    token_ids = np.array(token_ids).astype(int)
+    print(token_ids.shape)
+    # 创建白色画布 (H, W, 3)
+    grid = np.ones((grid_size, grid_size, 3), dtype=np.float32)
+
+    for tid in token_ids:
+        if 0 <= tid < grid_size * grid_size:
+            row = tid // grid_size
+            col = tid % grid_size
+
+            # 随机颜色
+            color = np.random.rand(3)
+            grid[row, col] = color
+
+    # 画图
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.imshow(grid)
+
+    ax.set_xticks(np.arange(-0.5, grid_size, 1))
+    ax.set_yticks(np.arange(-0.5, grid_size, 1))
+    ax.grid(color='black', linestyle='-', linewidth=0.5)
+
+    # 去掉刻度显示
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    ax.tick_params(left=False, bottom=False)
+    os.makedirs(f"{save_dir}/{room_name}/", exist_ok=True)
+    plt.savefig(f"{save_dir}/{room_name}/token_grid_{sid}.png", bbox_inches='tight')
 
 def load_scene_json(scene_json_path):
     with open(scene_json_path, 'r') as file:

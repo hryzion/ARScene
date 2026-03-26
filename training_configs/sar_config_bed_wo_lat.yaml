@@ -26,20 +26,20 @@ model:
     decoder_depth: 4
     num_recon: 25
     num_heads: 8
-    num_embeddings: 1024
+    num_embeddings: 128
     bottleneck : residual-vae
     use_codebook: true
     quant:
       vq_beta: 1
       ema_decay: 0.95
-    pretrained_path: ./pretrained/vqvae/residual_vq_bedroom_wo_lat_diffu/vqvae.pth
+    pretrained_path: ./pretrained/vqvae/residual_vq_bedroom_wo_lat_codebook128/vqvae.pth
 dataset:
   filter_fn: bedroom
-  dataset_dir: ./datasets/diffuscene_process_bedroom
+  dataset_dir: ./datasets/processed_bedroom
   use_objlat: False
   attr_dim: 43
   padded_length: 27
-  num_class: 23
+  num_class: 31
 
 super_parameters:
   epochs: 4000
@@ -49,7 +49,7 @@ super_parameters:
   cuda: 0
 
 save:
-  save_folder: ./pretrained/sceneGPT_diffu/
+  save_folder: ./pretrained/sceneGPT/
 
 text_condition: false
 room_mask_condition: true

@@ -204,7 +204,10 @@ class SceneTokenNormalizer:
         for key, s in slices.items():
             if key == 'latent':
                 continue
+            # if key == 'rotation':
+            #     continue
             min_s, max_s = self.stats[key]['min'].to(obj_tokens.device), self.stats[key]['max'].to(obj_tokens.device)
+            # print(obj_tokens.shape)
             normalized[:, s] = self.normalize(normalized[:, s], min_s, max_s)
         
         if len(original_shape) == 3:
@@ -225,6 +228,8 @@ class SceneTokenNormalizer:
         for key, s in slices.items():
             if key =='latent':
                 continue
+            # if key == 'rotation': ## if gpt, comment it
+            #     continue
             min_s, max_s = self.stats[key]['min'].to(obj_tokens.device), self.stats[key]['max'].to(obj_tokens.device)
             denorm[:, s] = self.denormalize(denorm[:, s], min_s, max_s)
         if len(original_shape) == 3:

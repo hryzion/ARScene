@@ -7,7 +7,7 @@ dataset:
   num_class: 31
 
 super_parameters:
-  epochs: 1000
+  epochs: 4000
   batch_size: 128
   learning_rate: 0.0001
   weight_decay: 0.00001

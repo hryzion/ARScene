@@ -1,6 +1,6 @@
 model:
   type: sar
-  depth: 16
+  depth: 8
   num_heads: 8
   mlp_ratio: 4.0
   drop_rate: 0.1
@@ -26,13 +26,13 @@ model:
     decoder_depth: 4
     num_recon: 25
     num_heads: 8
-    num_embeddings: 2048
+    num_embeddings: 128
     bottleneck : residual-vae
     use_codebook: true
     quant:
       vq_beta: 1
       ema_decay: 0.95
-    pretrained_path: ./pretrained/vqvae/residual_vq_diningroom_wo_lat/vqvae.pth
+    pretrained_path: ./pretrained/vqvae/residual_vq_diningroom_wo_lat_codebook128/vqvae.pth
 dataset:
   filter_fn: diningroom
   dataset_dir: ./datasets/processed_diningroom

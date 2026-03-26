@@ -66,10 +66,44 @@ def main():
         raise FileNotFoundError("Normalizer stats file not found. Please preprocess the dataset first.")
 
 
+    if args.scene != "none":
+        import numpy as np
+        data_path = os.path.join(dataset_dir, 'test')
+        oslist = [f for f in os.listdir(data_path)]
+        flag = False
+        f_name = None
+        for f in os.listdir(data_path):
+            if args.scene in f:
+                flag = True
+                f_name = f
+        if flag and f_name:
+            print(f"Found scene {f_name} in test dataset. Processing this scene only.")
+            
+            data = np.load(os.path.join(data_path, f_name, 'room_data.npz'), allow_pickle=True)
+            obj_tokens = torch.from_numpy(data['obj_tokens']).to(device).unsqueeze(0).float()  # Add batch dimension
+            obj_tokens = normalizer.transform_atiss(obj_tokens)
+            # pad dataset_padded_length
+            attention_mask = torch.zeros((1,obj_tokens.shape[1]), dtype=torch.bool).to(device)  # Assuming all tokens are valid for this single scene
+            padding_mask = torch.ones((1, dataset_padded_length - obj_tokens.shape[1]), dtype=torch.bool).to(device)
+            attention_mask = torch.cat([attention_mask, padding_mask], dim=1)
+            padding_token = torch.zeros((1, dataset_padded_length - obj_tokens.shape[1], obj_tokens.shape[2])).to(device)
+            obj_tokens = torch.cat([obj_tokens, padding_token], dim=1)
+            mask_logit, recon, vq_loss, _ = model(obj_tokens, padding_mask=attention_mask)
+            denormalized_recon = normalizer.invert_transform_atiss(recon)
+            denormalized_obj_tokens = normalizer.invert_transform_atiss(obj_tokens)
+            decoded_recon = decode_obj_tokens_with_mask(denormalized_recon, attention_mask, use_objlat=dataset_config['use_objlat'], num_classes=dataset_num_class)
+            decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'],num_classes=dataset_num_class)
+            visualize_result(decoded_recon, raw_data=decoded_raw, room_name=[f_name], save_dir=f'{save_folder}/topdown', batch_idx = 1 )
+            exit()
+        else:
+            print(f"Scene {args.scene} not found in test dataset. Processing all scenes instead.")
+            exit()
+
+
     # 2. 准备测试集和 DataLoader
     test_dataset = load_test_dataset(dataset_dir, dataset_padded_length=dataset_padded_length, num_classes=dataset_num_class)
     test_dataset.transform = normalizer.transform_atiss
-    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
     loss_fn = ObjTokenReconstructionLoss(num_categories = dataset_num_class, configs=dataset_config)
 
@@ -78,6 +112,9 @@ def main():
     # with torch.no_grad():
     for batch_idx, batch in enumerate(test_loader):
         room_name = batch['room_name']
+        # print(room_name)
+        # if room_name[0] != '62c107a4-c33f-4c8f-8d2b-dc1faa9f5f19_room2':
+        #     continue
         room_shape = batch['room_shape'].to(device)
         obj_tokens = batch['obj_tokens'].to(device)
         attention_mask = batch['attention_mask'].to(device)

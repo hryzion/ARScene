@@ -14,6 +14,7 @@ import wandb
 from torchvision import models
 from losses.ar_loss import AutoregressiveTokenLoss, MultiCodebookCrossEntropy
 import torch.nn.functional as F
+from utils import THREED_FRONT_CATEGORY, count_trainable_params
 
 def train_model(
     model : RoomLayoutAutoRegressiveNet,
@@ -232,7 +233,8 @@ if __name__ == "__main__":
         num_codebooks = sar.vae_token_sequentializer.num_codebooks, 
         vocab_size = sar.vae_token_sequentializer.vocab_size
     )
-    
+    total_p = count_trainable_params(sar)/1_000_000
+    print(f"[ INFO ] Total Training Parameters: {total_p:.2f}M")
     
     name = f"SceneGPT_{dataset_filter}_depth{sar_depth}_worddim{word_dim}"
     if not config.get("text_condition", False):

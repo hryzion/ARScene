@@ -19,7 +19,7 @@ from networks.stats_logger import StatsLogger, WandB
 
 def move_all_thing_to(sample_param:dict, device):
     for k, v in sample_param.items():
-        if k not in ['room_name', 'room_type','text_desc']:
+        if k not in ['room_name', 'room_type','text_desc',"floor_plans",'outer_boxes','floor_centriods','room_shape_polygons']:
             sample_param[k] = v.to(device)
 
 
@@ -91,10 +91,21 @@ if __name__ == "__main__":
     if model_type not in ['diffuscene']:
         raise ValueError(f"Unsupported model type: {model_type}")
     
+    # --------------------- dataset -----------------------
+    dataset_config = config.get('dataset', {})
+    dataset_dir = dataset_config.get('dataset_dir','./datasets/atiss')
+    dataset_padded_length = dataset_config.get('padded_length', None)
+    dataset_num_class = dataset_config.get('num_class', 31)
+    if not dataset_config.get('use_objlat'):
+        dataset_dir += '_wo_lat'
+    tag = f'{model_config["type"]}_{dataset_config.get("filter_fn","all")}'
+    if not dataset_config.get('use_objlat'):
+        tag += '_wo_lat'
     # --------------------- save -----------------------
 
     save_config = config.get('save', {})
     save_folder = save_config.get('save_folder',"./pretrained/rcvae/")
+    save_folder = os.path.join(save_folder, tag)
     os.makedirs(save_folder,exist_ok=True)
 
     with open(os.path.join(save_folder, 'config.yaml'), "w", encoding="utf-8") as f:
@@ -106,13 +117,6 @@ if __name__ == "__main__":
     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else 'cpu')
 
 
-    # --------------------- dataset -----------------------
-    dataset_config = config.get('dataset', {})
-    dataset_dir = dataset_config.get('dataset_dir','./datasets/atiss')
-    dataset_padded_length = dataset_config.get('padded_length', None)
-    dataset_num_class = dataset_config.get('num_class', 31)
-    if not dataset_config.get('use_objlat'):
-        dataset_dir += '_wo_lat'
 
     train_dataset = ThreeDFrontDatasetDiffuScene(npz_dir=dataset_dir,split='train',padded_length=dataset_padded_length,num_cate=len(THREED_FRONT_CATEGORY))
     val_dataset = ThreeDFrontDatasetDiffuScene(npz_dir=dataset_dir,split='test',padded_length=dataset_padded_length,num_cate=len(THREED_FRONT_CATEGORY))
@@ -141,17 +145,16 @@ if __name__ == "__main__":
         p.requires_grad = False
     
     diffuscene = DiffusionSceneLayout_DDPM(
-        dataset_num_class, feat_extractor, config["network"]
+        dataset_num_class+2, feat_extractor, config["network"] # add 2 empty classes
     ).to(device)
 
     total_p = count_trainable_params(diffuscene)/1_000_000
     print(f"[ INFO ] Total Training Parameters: {total_p:.2f}M")
 
     ar_loss = None
+    # exit()
 
-    tag = f'{model_config["type"]}_{dataset_config.get("filter_fn","all")}'
-    if not dataset_config.get('use_objlat'):
-        tag += '_wo_lat'
+    
     train_model(
         model=diffuscene,
         train_loader=train_loader,

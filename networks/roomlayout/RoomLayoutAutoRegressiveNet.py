@@ -34,7 +34,7 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
                 config,
                 device,
                 depth = 16, embed_dim = 128, num_heads = 16, mlp_ratio=4., drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
-                shared_aln =False, cond_drop_rate=0.6,norm_eps=1e-6,
+                shared_aln =False, cond_drop_rate=0.4,norm_edps=1e-6,
                 attn_l2_norm = False,
                 t_scales = [1, 5, 15, 27],
                 use_prior_cluster = False
