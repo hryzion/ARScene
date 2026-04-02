@@ -259,6 +259,57 @@ def sample_multicodebook_topk_topp(logits_BLKV: torch.Tensor, top_k: int = 0, to
 
     return z # B, L, K
 
+def sample_single_codebook_topk_topp(
+    logits_BLV: torch.Tensor,
+    top_k: int = 0,
+    top_p: float = 0.0,
+    rng=None,
+    num_samples: int = 1
+):
+    """
+    单码本采样函数
+    Args:
+        logits_BLV: (B, L, V) logits
+        top_k: top-k 采样参数
+        top_p: top-p (nucleus) 采样参数
+        rng: torch.Generator，可选
+        num_samples: 每个位置采样数量（默认1）
+    Returns:
+        z: (B, L) long tensor，采样得到的索引
+    """
+    B, L, V = logits_BLV.shape
+    z = torch.zeros(B, L, dtype=torch.long, device=logits_BLV.device)
+
+    # ---- 遍历每个位置采样 ----
+    logits = logits_BLV.clone()
+
+    # ---- Top-K ----
+    if top_k > 0:
+        kth_val = logits.topk(top_k, dim=-1).values[..., -1:]
+        logits = logits.masked_fill(logits < kth_val, float('-inf'))
+
+    # ---- Top-P ----
+    if top_p > 0:
+        sorted_logits, sorted_idx = torch.sort(logits, descending=True, dim=-1)
+        sorted_probs = torch.softmax(sorted_logits, dim=-1)
+        cumsum_probs = sorted_probs.cumsum(dim=-1)
+        sorted_idx_to_remove = cumsum_probs > top_p
+        sorted_idx_to_remove[..., 0] = False  # 保留至少一个
+        # scatter回原来的顺序
+        mask = torch.zeros_like(sorted_idx_to_remove).scatter(-1, sorted_idx, sorted_idx_to_remove)
+        logits = logits.masked_fill(mask, float('-inf'))
+
+    # ---- softmax + multinomial ----
+    probs = torch.softmax(logits, dim=-1)
+    z = torch.multinomial(
+        probs.view(-1, V),
+        num_samples=num_samples,
+        replacement=num_samples > 1,
+        generator=rng
+    ).view(B, L)
+
+    return z  # B x L
+
 
 
 

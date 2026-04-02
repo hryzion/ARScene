@@ -219,7 +219,14 @@ class TokenSequentializer(nn.Module):
         
         return torch.cat(f_hat_list, dim=-1) # B, L, D
 
-        
+    def get_embedding_from_codebook_k(self, idx_list: torch.Tensor, k):
+            '''
+            return embedding from codebook k
+            idx_list: [B, L],
+            k: codebook index
+            return [B, L, subdim]
+            '''
+            return self.embeddings[k](idx_list) # B,L,subdim
 
     def console_log_distribution(self, z_e, after_cluster = False):
         z_e_mean = z_e.mean().item()
@@ -310,6 +317,13 @@ class TokenSequentializer(nn.Module):
                 next_scales.append(rescale_f_hat)  # B x token_len_next x D
 
         return torch.cat(next_scales, dim=1)  # B x (sum of token lens) x D
+    
+
+    def get_encoded_token_map(self, residual_fm_gt: torch.Tensor) -> torch.Tensor: # B,L,K -> B,L,K,D
+        f_hat_list =[]
+        for k in range(self.num_codebooks):
+            f_hat_list.append(self.embeddings[k](residual_fm_gt[:,:,k])) # B, L, sub_dim
+        return torch.stack(f_hat_list, dim=2)
     
     def get_fhat_from_residual_fm(self, inference_residual_fm:List[torch.Tensor],padding_mask = None) -> torch.Tensor:
         B = inference_residual_fm[0].shape[0]

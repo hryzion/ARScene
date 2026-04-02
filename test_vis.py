@@ -41,7 +41,7 @@ def main():
     save_path = os.path.join(save_folder, f"{model_config['type']}.pth")
 
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
     dataset_config = config.get('dataset', {})
     dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
@@ -82,6 +82,7 @@ def main():
             data = np.load(os.path.join(data_path, f_name, 'room_data.npz'), allow_pickle=True)
             obj_tokens = torch.from_numpy(data['obj_tokens']).to(device).unsqueeze(0).float()  # Add batch dimension
             obj_tokens = normalizer.transform_atiss(obj_tokens)
+            print(obj_tokens[0][0])
             # pad dataset_padded_length
             attention_mask = torch.zeros((1,obj_tokens.shape[1]), dtype=torch.bool).to(device)  # Assuming all tokens are valid for this single scene
             padding_mask = torch.ones((1, dataset_padded_length - obj_tokens.shape[1]), dtype=torch.bool).to(device)
@@ -92,7 +93,7 @@ def main():
             denormalized_recon = normalizer.invert_transform_atiss(recon)
             denormalized_obj_tokens = normalizer.invert_transform_atiss(obj_tokens)
             decoded_recon = decode_obj_tokens_with_mask(denormalized_recon, attention_mask, use_objlat=dataset_config['use_objlat'], num_classes=dataset_num_class)
-            decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'],num_classes=dataset_num_class)
+            decoded_raw  = decode_obj_tokens_with_mask(obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'],num_classes=dataset_num_class)
             visualize_result(decoded_recon, raw_data=decoded_raw, room_name=[f_name], save_dir=f'{save_folder}/topdown', batch_idx = 1 )
             exit()
         else:
@@ -118,7 +119,8 @@ def main():
         room_shape = batch['room_shape'].to(device)
         obj_tokens = batch['obj_tokens'].to(device)
         attention_mask = batch['attention_mask'].to(device)
-
+        # print(obj_tokens.shape)
+        # exit()
         # print(attention_mask)
         mask_logit, recon, vq_loss, _ = model(obj_tokens, padding_mask=attention_mask)
         # print(recon[0,0])

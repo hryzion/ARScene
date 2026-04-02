@@ -82,6 +82,7 @@ class SceneLayoutTokenEncoder(nn.Module):
     def forward(self, x, padding_mask=None):  # x: [B, N, D]
         
         B, N, D = x.shape
+        # print(x.shape)
         
         # Add root token
         abstract_embed = self.abstract_token.expand(B, self.num_bottleneck, D)  # [B, 1, D]
@@ -328,7 +329,7 @@ class RoomLayoutVQVAE(nn.Module):
         rx = self.pe_ro(x[:, :, self.num_classes+6:self.num_classes+7])
 
         x_cat = torch.cat([class_emb, tx, ty, tz, sx, sy, sz, rx, x[:, :, self.num_classes+7:]], dim=-1)
-        # print(x_cat.shape)
+        # print(self.num_classes)
 
         z = self.encoder(x_cat, padding_mask=padding_mask) # B, N+1, D
         # print(z.shape)

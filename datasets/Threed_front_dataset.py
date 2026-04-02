@@ -159,17 +159,24 @@ class ThreeDFrontDataset(Dataset):
         if padded_length is not None:
             self.padded_length = padded_length # uniform length for obj tokens
 
+        self.data_list = []
+        self.img_list = []
+        for fname in self.file_list:
+            npz_path = os.path.join(self.npz_dir, fname,'room_data.npz')
+            mask_path= os.path.join(self.npz_dir, fname,'room_mask.png')
+            data = np.load(npz_path, allow_pickle=True)
+            self.data_list.append(data)
+            self.img_list.append(Image.open(mask_path))
+
     def __len__(self):
         return len(self.file_list)
 
     def __getitem__(self, idx):
-        npz_path = os.path.join(self.npz_dir, self.file_list[idx],'room_data.npz')
-        mask_path= os.path.join(self.npz_dir, self.file_list[idx],'room_mask.png')
-        data = np.load(npz_path, allow_pickle=True)
+        data = self.data_list[idx]
 
         # 从 .npz 文件中读取数据
         room_type = data["room_type"]  # int or str
-        room_shape = Image.open(mask_path)
+        room_shape = self.img_list[idx]
         obj_tokens = data["obj_tokens"].astype(np.float32)    # shape: (M, T)
 
         # 转换为张量
@@ -265,17 +272,16 @@ class ThreeDFrontDatasetRdm(ThreeDFrontDataset):
     def __init__(self, npz_dir, transform=None, split='train', padded_length=None, num_cate=31):
         super().__init__(npz_dir, transform, split, padded_length, num_cate)
         self.feature_size = self.num_cate + 2 + 3 + 3 + 1
+        
     
     
 
     def __getitem__(self, idx):
-        npz_path = os.path.join(self.npz_dir, self.file_list[idx],'room_data.npz')
-        mask_path= os.path.join(self.npz_dir, self.file_list[idx],'room_mask.png')
-        data = np.load(npz_path, allow_pickle=True)
+        data = self.data_list[idx]
 
         # 从 .npz 文件中读取数据
         room_type = data["room_type"]  # int or str
-        room_shape = Image.open(mask_path)
+        room_shape = self.img_list[idx]
         obj_tokens = data["obj_tokens"].astype(np.float32)    # shape: (M, T)
 
         # 转换为张量
@@ -363,7 +369,7 @@ class ThreeDFrontDatasetRdm(ThreeDFrontDataset):
 
 
         attention_mask_batch = (padded_obj_tokens == 0).all(dim=-1).bool()
-        print(attention_mask_batch.shape)
+        # print(attention_mask_batch.shape)
         # print("padded_obj_tokens",padded_obj_tokens.shape)
 
         return {
@@ -388,21 +394,29 @@ class ThreeDFrontDatasetDiffuScene(ThreeDFrontDataset):
     def __init__(self, npz_dir, transform=None, split='train', padded_length=None, num_cate=31):
         super().__init__(npz_dir, transform, split, padded_length, num_cate)
         self.feature_size = self.num_cate + 2 + 3 + 3 + 2
-    
+        self.shape_list = []
+        
+        for fname in self.file_list:
+            shape_path =os.path.join(self.npz_dir, fname,'room_shape.npz')
+            shape_data = np.load(shape_path, allow_pickle=True)
+            self.shape_list.append(shape_data)
+
+
     
 
     def __getitem__(self, idx):
-        npz_path = os.path.join(self.npz_dir, self.file_list[idx],'room_data.npz')
-        mask_path= os.path.join(self.npz_dir, self.file_list[idx],'room_mask.png')
-        shape_path =os.path.join(self.npz_dir, self.file_list[idx],'room_shape.npz')
-        data = np.load(npz_path, allow_pickle=True)
-        shape_data = np.load(shape_path, allow_pickle = True)
+        data = self.data_list[idx]
+
+        # 从 .npz 文件中读取数据
+
+
+        shape_data = self.shape_list[idx]
         room_shape_polygon = shape_data['room_shape']
         
 
         # 从 .npz 文件中读取数据
         room_type = data["room_type"]  # int or str
-        room_shape = Image.open(mask_path)
+        room_shape = self.img_list[idx]
         obj_tokens = data["obj_tokens"].astype(np.float32)    # shape: (M, T)
 
         # 转换为张量
@@ -508,7 +522,7 @@ class ThreeDFrontDatasetDiffuScene(ThreeDFrontDataset):
             'room_type': room_types,                  # [B]
             'lengths' : length,
             'room_layout': room_shapes,                # [B, 3, H, W]
-            'text_desc': room_descs,          # [B]  
+            'description': room_descs,          # [B]  
             'obj_tokens': padded_obj_tokens,           # [B, max_num_objects, T]
             'attention_mask': attention_mask_batch,   # [B, max_num_objects]
             'class_labels': class_labels,
@@ -522,15 +536,20 @@ class ThreeDFrontDatasetPhyScene(ThreeDFrontDataset):
     def __init__(self, npz_dir, transform=None, split='train', padded_length=None, num_cate=31):
         super().__init__(npz_dir, transform, split, padded_length, num_cate)
         self.feature_size = self.num_cate + 2 + 3 + 3 + 2
+        self.shape_list = []
+        
+        for fname in self.file_list:
+            shape_path =os.path.join(self.npz_dir, fname,'room_shape.npz')
+            shape_data = np.load(shape_path, allow_pickle=True)
+            self.shape_list.append(shape_data)
+
     
     
 
     def __getitem__(self, idx):
-        npz_path = os.path.join(self.npz_dir, self.file_list[idx],'room_data.npz')
-        mask_path= os.path.join(self.npz_dir, self.file_list[idx],'room_mask.png')
-        shape_path =os.path.join(self.npz_dir, self.file_list[idx],'room_shape.npz')
-        data = np.load(npz_path, allow_pickle=True)
-        shape_data = np.load(shape_path, allow_pickle = True)
+      
+        data = self.data_list[idx]
+        shape_data = self.shape_list[idx]
         room_shape_polygon = shape_data['room_shape']
         room_shape_boxes = shape_data['boxes'].item()
         room_shape_vertices = torch.from_numpy(shape_data['vertices'])
@@ -541,8 +560,9 @@ class ThreeDFrontDatasetPhyScene(ThreeDFrontDataset):
 
         # 从 .npz 文件中读取数据
         room_type = data["room_type"]  # int or str
-        room_shape = Image.open(mask_path)
+        room_shape = self.img_list[idx]
         obj_tokens = data["obj_tokens"].astype(np.float32)    # shape: (M, T)
+
 
         # 转换为张量
         if isinstance(room_type, str):
@@ -653,7 +673,7 @@ class ThreeDFrontDatasetPhyScene(ThreeDFrontDataset):
             'room_type': room_types,                  # [B]
             'lengths' : length,
             'room_layout': room_shapes,                # [B, 3, H, W]
-            'text_desc': room_descs,          # [B]  
+            'description': room_descs,          # [B]  
             'obj_tokens': padded_obj_tokens,           # [B, max_num_objects, T]
             'attention_mask': attention_mask_batch,   # [B, max_num_objects]
             'class_labels': class_labels,

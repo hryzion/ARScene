@@ -143,7 +143,7 @@ def main():
 
             torch.cuda.synchronize()
             start_time = time.time()
-            infer_room, infer_mask_prob, _ = sar.auto_regressive_inference(B = batch_size, test_desc=text_desc, room_mask=room_shape,cfg=0,top_k=90, top_p=0.9)
+            infer_room, infer_mask_prob, _ = sar.auto_regressive_inference(B = batch_size, test_desc=text_desc, room_mask=None,cfg=0,top_k=500, top_p=0.9)
 
             infer_valid_mask = (infer_mask_prob > 0.1).bool().squeeze(-1)
             torch.cuda.synchronize()
@@ -166,6 +166,7 @@ def main():
             for i, scene_json in enumerate(test_scene_jsons):
                 save_path = os.path.join(f'{save_folder}/scene/{args.tag}', f'{room_name[i]}_infer.json')
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                scene_json['description'] = text_desc[i]
                 with open(save_path, 'w') as f:
                     import json
                     json.dump(scene_json, f, indent=4)

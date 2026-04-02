@@ -16,3 +16,4 @@ test/
 real_scene/
 datasets/diffuscene_process*
 cuda_op/
+3d_front_processed/

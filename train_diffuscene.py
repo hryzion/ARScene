@@ -19,7 +19,7 @@ from networks.stats_logger import StatsLogger, WandB
 
 def move_all_thing_to(sample_param:dict, device):
     for k, v in sample_param.items():
-        if k not in ['room_name', 'room_type','text_desc',"floor_plans",'outer_boxes','floor_centriods','room_shape_polygons']:
+        if k not in ['room_name', 'room_type','description',"floor_plans",'outer_boxes','floor_centriods','room_shape_polygons']:
             sample_param[k] = v.to(device)
 
 
@@ -50,10 +50,12 @@ def train_model(
         )
     lr_scheduler = schedule_factory(config["training"])
     optimizer = optimizer_factory(config["training"], filter(lambda p: p.requires_grad, model.parameters()) ) 
+    iterations = 0
     for epoch in range(num_epochs):
-        adjust_learning_rate(lr_scheduler, optimizer, epoch)
+        adjust_learning_rate(lr_scheduler, optimizer, iterations)
         model.train()
         for b, sample in enumerate(train_loader):
+            iterations+=1
             move_all_thing_to(sample, device)
             loss = train_on_batch(model, optimizer=optimizer, sample_params=sample, config=configs)
             StatsLogger.instance().print_progress(epoch+1, b+1, loss)
@@ -101,6 +103,8 @@ if __name__ == "__main__":
     tag = f'{model_config["type"]}_{dataset_config.get("filter_fn","all")}'
     if not dataset_config.get('use_objlat'):
         tag += '_wo_lat'
+    if model_config.get('text_condition', False):
+        tag += '_txt'
     # --------------------- save -----------------------
 
     save_config = config.get('save', {})

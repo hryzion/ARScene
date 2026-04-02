@@ -117,7 +117,7 @@ def main():
             # print(floor_plan_list_cuda[0][0].device)
             floor_plan_centriods = batch['floor_centriods']
             
-            text_input = None
+            text_input = batch['description']
 
             torch.cuda.synchronize()
             start_time = time.time()
@@ -126,6 +126,7 @@ def main():
                 room_mask = room_shape,
                 num_points=config["network"]["sample_num_points"],
                 point_dim=config["network"]["point_dim"],
+                text = text_input,
                 batch_size=room_shape.shape[0],
                 room_outer_box = room_outer_boxes,
                 floor_plan = floor_plan_list,
@@ -189,6 +190,7 @@ def main():
             test_scene_jsons = pack_scene_json(decoded_infer,room_name)
             for i, scene_json in enumerate(test_scene_jsons):
                 save_path = os.path.join(f'{save_folder}/physcene/scene/{args.tag}', f'{room_name[i]}_infer.json')
+                scene_json['description']  = text_input[i]
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 with open(save_path, 'w') as f:
                     import json

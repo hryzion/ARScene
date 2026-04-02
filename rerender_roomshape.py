@@ -31,16 +31,16 @@ def rerender_roomshape(target_dir, filter = '', type_filter = "bedroom"):
         scaled_roomshape_rendered = render_room_shape_image_fixed_scale(room, fixed_size=fixed_size)
         scaled_roomshape_rendered.save(os.path.join(target_dir, room_name, 'room_mask.png'))
         # print(room['roomShape'])
-        # room_shape = np.array(room['roomShape'])
-        # boxes = calc_box_from_polygon(room_shape)
-        # v, f = polygon_to_mesh(room_shape)
-        # np.savez_compressed(
-        #     os.path.join(target_dir, room_name, 'room_shape.npz'),
-        #     room_shape = room_shape,
-        #     boxes = boxes,
-        #     vertices = v,
-        #     faces = f
-        # )
+        room_shape = np.array(room['roomShape'])
+        boxes = calc_box_from_polygon(room_shape)
+        v, f = polygon_to_mesh(room_shape)
+        np.savez_compressed(
+            os.path.join(target_dir, room_name, 'room_shape.npz'),
+            room_shape = room_shape,
+            boxes = boxes,
+            vertices = v,
+            faces = f
+        )
 
 
 def calc_box_from_polygon( points, S=50):

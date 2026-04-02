@@ -56,9 +56,10 @@ def train_model(
             residual_fm_gt_list = t_sequentializer.generate_residual_fm_gt(token_map)
             x_wo_first = t_sequentializer.generate_scaling_input(residual_fm_gt_list)
             residual_fm_gt = torch.cat(residual_fm_gt_list, dim = 1)
+            encoded_gt = t_sequentializer.get_encoded_token_map(residual_fm_gt=residual_fm_gt)
             optimizer.zero_grad()
 
-            logits= model(x_wo_first, text_desc, room_shape)
+            logits= model(x_wo_first, text_desc, room_shape, encoded_gt)
             loss, loss_dict = criterion(logits, residual_fm_gt)
             loss.backward()
             optimizer.step()
@@ -80,8 +81,10 @@ def train_model(
             residual_fm_gt_list = t_sequentializer.generate_residual_fm_gt(token_map)
             x_wo_first = t_sequentializer.generate_scaling_input(residual_fm_gt_list)
             residual_fm_gt = torch.cat(residual_fm_gt_list, dim = 1)
+            encoded_gt = t_sequentializer.get_encoded_token_map(residual_fm_gt)
+            
 
-            logits=  model(x_wo_first, text_desc, room_shape)
+            logits=  model(x_wo_first, text_desc, room_shape, encoded_gt)
             loss, loss_dict = criterion(logits, residual_fm_gt)
             val_loss += loss.item()
 

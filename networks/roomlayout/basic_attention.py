@@ -147,19 +147,21 @@ class AdaptLayerNormSelfAttention(nn.Module):
             lin = nn.Linear(cond_dim, 6*embed_dim)
             self.ada_lin = nn.Sequential(nn.SiLU(inplace=False), lin)
     def forward(self, x, cond, causal_mask = None, key_padding_mask = None):
-        if self.shared_aln:
-            cond = cond[:,None,None,:]
-            gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond).unbind(2) # 116C + B16C =unbind(2)=> 6 B1C
-           
+        if cond is not None:
+
+            if self.shared_aln:
+                cond = cond[:,None,None,:]
+                gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond).unbind(2) # 116C + B16C =unbind(2)=> 6 B1C
+            
+            else:
+                gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond).view(-1, 1, 6, self.embed_dim).unbind(2)
+            
+            x = x + self.drop_path(self.self_attn( self.ln_wo_grad(x).mul(scale1.add(1)).add(shift1), attn_mask=causal_mask, key_padding_mask=key_padding_mask ).mul(gamma1))
+            x = x + self.drop_path(self.ffn( self.ln_wo_grad(x).mul(scale2.add(1)).add(shift2) ).mul(gamma2)) # this mul(gamma2) cannot be in-placed when FusedMLP is used
+            
         else:
-            gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond).view(-1, 1, 6, self.embed_dim).unbind(2)
-            
-            
-        # check("in x:", x)
-        x = x + self.drop_path(self.self_attn( self.ln_wo_grad(x).mul(scale1.add(1)).add(shift1), attn_mask=causal_mask, key_padding_mask=key_padding_mask ).mul(gamma1))
-        # check("out attn:", x)
-        x = x + self.drop_path(self.ffn( self.ln_wo_grad(x).mul(scale2.add(1)).add(shift2) ).mul(gamma2)) # this mul(gamma2) cannot be in-placed when FusedMLP is used
-        # check("out ffn:", x)
+            x = x + self.drop_path(self.self_attn( self.ln_wo_grad(x), attn_mask=causal_mask, key_padding_mask=key_padding_mask ) )
+            x = x + self.drop_path(self.ffn( self.ln_wo_grad(x) )) # this mul(gamma2) cannot be in-placed when FusedMLP is used
         return x
     
 class AdaptLayerNormCrossAttention(nn.Module):
@@ -181,32 +183,23 @@ class AdaptLayerNormCrossAttention(nn.Module):
             lin = nn.Linear(cond_dim, 6*embed_dim)
             self.ada_lin = nn.Sequential(nn.SiLU(inplace=False), lin)
     def forward(self, x, cond, cond_cross, causal_mask = None, key_padding_mask = None):
-        if self.shared_aln:
-            cond = cond[:,None,None,:]
-            gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond).unbind(2) # 116C + B16C =unbind(2)=> 6 B1C
-            # gamma1 = gamma1.clamp(-5, 5)
-            # gamma2 = gamma2.clamp(-5, 5)
-            # scale1 = scale1.clamp(-5, 5)
-            # scale2 = scale2.clamp(-5, 5)
-            # shift1 = shift1.clamp(-1, 1)
-            # shift2 = shift2.clamp(-1, 1)
+
+        if cond is not None:
+            if self.shared_aln:
+                cond = cond[:,None,None,:]
+                gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond).unbind(2) # 116C + B16C =unbind(2)=> 6 B1C
+                
+
+            else:
+                gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond).view(-1, 1, 6, self.embed_dim).unbind(2)
+                
+            x = x + self.drop_path(self.cross_attn( self.ln_wo_grad(x).mul(scale1.add(1)).add(shift1), cond_cross, attn_mask=causal_mask, key_padding_mask=key_padding_mask ).mul(gamma1))
+            x = x + self.drop_path(self.ffn( self.ln_wo_grad(x).mul(scale2.add(1)).add(shift2) ).mul(gamma2) ) # this mul(gamma2) cannot be in-placed when FusedMLP is used
 
         else:
-            gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond).view(-1, 1, 6, self.embed_dim).unbind(2)
-            gamma1 = gamma1.clamp(-5, 5)
-            gamma2 = gamma2.clamp(-5, 5)
-            scale1 = scale1.clamp(-5, 5)
-            scale2 = scale2.clamp(-1, 1)
-            shift1 = shift1.clamp(-1, 1)
-            shift2 = shift2.clamp(-1, 1)
+            x = x + self.drop_path(self.cross_attn( self.ln_wo_grad(x), cond_cross, attn_mask=causal_mask, key_padding_mask=key_padding_mask ))
+            x = x + self.drop_path(self.ffn( self.ln_wo_grad(x) ) ) # this mul(gamma2) cannot be in-placed when FusedMLP is used
 
-        # check("in x:", x)
-
-        x = x + self.drop_path(self.cross_attn( self.ln_wo_grad(x).mul(scale1.add(1)).add(shift1), cond_cross, attn_mask=causal_mask, key_padding_mask=key_padding_mask ).mul(gamma1))
-        # check("out attn:", x)
-        
-        x = x + self.drop_path(self.ffn( self.ln_wo_grad(x).mul(scale2.add(1)).add(shift2) ).mul(gamma2) ) # this mul(gamma2) cannot be in-placed when FusedMLP is used
-        # check("out ffn:", x)
         return x
     
 class AdaptLayerNormDecoderBlock(nn.Module):

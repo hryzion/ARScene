@@ -67,6 +67,7 @@ def train_model(
             # room_shape = batch['room_shape'].to(device)
             obj_tokens = batch['obj_tokens'].to(device)
             # print(obj_tokens.shape)
+            # print(obj_tokens.shape)
             attention_mask = batch['attention_mask'].to(device)
 
             # print(obj_tokens[0,0])

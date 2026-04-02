@@ -50,6 +50,8 @@ def main():
     tag = f'{model_config["type"]}_{dataset_config.get("filter_fn","all")}'
     if not dataset_config.get('use_objlat'):
         tag += '_wo_lat'
+    # if model_config.get('text_condition', False):
+    #     tag += '_txt'
     # --------------------- save -----------------------
 
     save_config = config.get('save', {})
@@ -103,9 +105,9 @@ def main():
             room_shape = batch['room_layout'].to(device)
             obj_tokens = batch['obj_tokens'].to(device)
             attention_mask = batch['attention_mask'].to(device)
-            text_desc = batch['text_desc']
+            text_desc = batch['description']
 
-            text_input = None
+            text_input = text_desc
 
             torch.cuda.synchronize()
             start_time = time.time()
@@ -114,7 +116,10 @@ def main():
                 room_mask = room_shape,
                 num_points=config["network"]["sample_num_points"],
                 point_dim=config["network"]["point_dim"],
-                batch_size=room_shape.shape[0]
+                batch_size=room_shape.shape[0],
+                text = text_input,
+                batch_seeds = torch.arange(room_shape.shape[0])
+
             )
             
             torch.cuda.synchronize()
@@ -177,6 +182,7 @@ def main():
             test_scene_jsons = pack_scene_json(decoded_infer,room_name)
             for i, scene_json in enumerate(test_scene_jsons):
                 save_path = os.path.join(f'{save_folder}/scene/{args.tag}', f'{room_name[i]}_infer.json')
+                scene_json['description'] = text_desc[i]
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 with open(save_path, 'w') as f:
                     import json
