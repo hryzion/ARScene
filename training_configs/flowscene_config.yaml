@@ -1,0 +1,79 @@
+dataset:
+  use_objlat: False
+  filter_fn: livingroom
+  dataset_dir: ./datasets/atiss_livingroom
+  attr_dim: 43
+  padded_length: 27
+  num_class: 31
+
+super_parameters:
+  epochs: 3000
+  batch_size: 128
+  learning_rate: 0.0002
+  weight_decay: 0.00001
+  cuda: 0
+
+save:
+  save_folder: ./pretrained/flowscene/
+
+network:
+  type: flowscene
+  net_type: "unet1d"
+  room_mask_condition: True
+  text_condition: False
+  text_glove_embedding: False
+  text_clip_embedding: False
+  objectness_dim: 0
+  class_dim: 33
+  translation_dim: 3
+  point_dim: 41
+  size_dim: 3
+  angle_dim: 2
+  objfeat_dim: 0
+  learnable_embedding: true
+  instance_condition: true
+  instance_emb_dim: 128
+  latent_dim: 256
+  sample_num_points: 27
+  flow_kwargs:
+    time_scale: 1000.0
+    num_steps: 100
+    max_grad_norm: 10.0
+    clip_denoised: False
+  diffusion_kwargs:
+    time_num: 1000
+  net_kwargs:
+    dim: 512
+    dim_mults: [1, 1, 1, 1]
+    channels: 41
+    objectness_dim: 0
+    class_dim: 33
+    translation_dim: 3
+    size_dim: 3
+    angle_dim: 2
+    objfeat_dim: 0
+    context_dim: 256
+    instanclass_dim: 128
+    seperate_all: true
+    text_condition: False
+
+training:
+  splits: ["train", "val"]
+  epochs: 60000
+  steps_per_epoch: 500
+  batch_size: 128
+  save_frequency: 2000
+  max_grad_norm: 10
+  optimizer: Adam
+  weight_decay: 0.0
+  schedule: "step"
+  lr: 0.0002
+  lr_step: 10000
+  lr_decay: 0.5
+
+logger:
+  type: "wandb"
+  project: "my_flowscene"
+
+loss:
+  beta: 0.25
