@@ -63,10 +63,7 @@ class StatsLogger(object):
         for k,  v in self._values.items():
             msg += " - " + k + ": " + precision.format(v.value)
         for f in self._output_files:
-            if f.isatty():
-                print(msg + "\b"*len(msg), end="", flush=True, file=f)
-            else:
-                print(msg, flush=True, file=f)
+            print(msg, flush=True, file=f)
 
     @classmethod
     def instance(cls):

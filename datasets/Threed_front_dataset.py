@@ -9,6 +9,93 @@ import torchvision.transforms.functional as TF
 import random
 import math
 
+
+def _polygon_points_array(room_shape_polygon):
+    if isinstance(room_shape_polygon, torch.Tensor):
+        room_shape_polygon = room_shape_polygon.detach().cpu().numpy()
+    if isinstance(room_shape_polygon, np.ndarray) and room_shape_polygon.dtype == object:
+        if room_shape_polygon.shape == ():
+            room_shape_polygon = room_shape_polygon.item()
+        else:
+            room_shape_polygon = room_shape_polygon.tolist()
+    if isinstance(room_shape_polygon, dict):
+        for key in ("room_shape", "polygon", "points", "vertices", "corners"):
+            if key in room_shape_polygon:
+                return _polygon_points_array(room_shape_polygon[key])
+        raise KeyError("Cannot find polygon points in room_shape dict")
+    if isinstance(room_shape_polygon, (list, tuple)):
+        if len(room_shape_polygon) == 0:
+            raise ValueError("Empty room shape polygon")
+        candidates = []
+        for item in room_shape_polygon:
+            try:
+                arr = np.asarray(item, dtype=np.float32)
+            except (TypeError, ValueError):
+                continue
+            if arr.ndim == 2 and arr.shape[0] >= 3 and arr.shape[1] >= 2:
+                candidates.append(arr)
+        if candidates:
+            return max(candidates, key=lambda x: x.shape[0])
+
+    points = np.asarray(room_shape_polygon, dtype=np.float32)
+    if points.ndim == 3:
+        points = max(points, key=lambda x: x.shape[0])
+    if points.ndim != 2 or points.shape[0] < 3 or points.shape[1] < 2:
+        raise ValueError(f"Unsupported room_shape polygon shape: {points.shape}")
+    if points.shape[1] >= 3:
+        points = points[:, [0, 2]]
+    else:
+        points = points[:, :2]
+    return points
+
+
+def sample_floor_plan_boundary_points_normals(room_shape_polygon, n_points=256):
+    points = _polygon_points_array(room_shape_polygon)
+    points = points[np.isfinite(points).all(axis=1)]
+    if points.shape[0] < 3:
+        raise ValueError("Room polygon has fewer than 3 valid points")
+    if np.linalg.norm(points[0] - points[-1]) < 1e-6:
+        points = points[:-1]
+
+    center = points.mean(axis=0, keepdims=True)
+    scale = np.abs(points - center).max()
+    if scale < 1e-6:
+        scale = 1.0
+    norm_points = (points - center) / scale
+
+    next_points = np.roll(norm_points, -1, axis=0)
+    segments = next_points - norm_points
+    lengths = np.linalg.norm(segments, axis=1)
+    valid = lengths > 1e-6
+    norm_points = norm_points[valid]
+    next_points = next_points[valid]
+    segments = segments[valid]
+    lengths = lengths[valid]
+    if len(lengths) == 0:
+        raise ValueError("Room polygon has no valid edges")
+
+    signed_area = 0.5 * np.sum(
+        norm_points[:, 0] * next_points[:, 1]
+        - next_points[:, 0] * norm_points[:, 1]
+    )
+    if signed_area >= 0:
+        normals = np.stack([segments[:, 1], -segments[:, 0]], axis=1)
+    else:
+        normals = np.stack([-segments[:, 1], segments[:, 0]], axis=1)
+    normals = normals / np.maximum(lengths[:, None], 1e-6)
+
+    cumulative = np.concatenate([[0.0], np.cumsum(lengths)])
+    perimeter = cumulative[-1]
+    distances = np.linspace(0.0, perimeter, n_points, endpoint=False)
+    edge_indices = np.searchsorted(cumulative[1:], distances, side="right")
+    edge_offsets = distances - cumulative[edge_indices]
+    ratios = edge_offsets[:, None] / lengths[edge_indices, None]
+    sampled_points = norm_points[edge_indices] + ratios * segments[edge_indices]
+    sampled_normals = normals[edge_indices]
+
+    fpbpn = np.concatenate([sampled_points, sampled_normals], axis=1)
+    return torch.from_numpy(fpbpn.astype(np.float32))
+
 def small_object_dropout(obj_tokens, num_classes,
                          dropout_prob=0.3,
                          volume_threshold=0.02):
@@ -531,6 +618,34 @@ class ThreeDFrontDatasetDiffuScene(ThreeDFrontDataset):
             'angles':angles,
             'room_shape_polygons': room_shape_polygons,
         }
+
+
+class ThreeDFrontDatasetMiDiffusion(ThreeDFrontDatasetDiffuScene):
+    def __init__(
+        self,
+        npz_dir,
+        transform=None,
+        split='train',
+        padded_length=None,
+        num_cate=31,
+        n_fpbpn=256,
+    ):
+        super().__init__(npz_dir, transform, split, padded_length, num_cate)
+        self.n_fpbpn = n_fpbpn
+
+    def __getitem__(self, idx):
+        sample = super().__getitem__(idx)
+        sample['fpbpn'] = sample_floor_plan_boundary_points_normals(
+            sample['room_shape_poly'],
+            n_points=self.n_fpbpn,
+        )
+        return sample
+
+    @staticmethod
+    def collate_fn_parallel_transformer(samples):
+        batch = ThreeDFrontDatasetDiffuScene.collate_fn_parallel_transformer(samples)
+        batch['fpbpn'] = torch.stack([sample['fpbpn'] for sample in samples], dim=0)
+        return batch
 
 class ThreeDFrontDatasetPhyScene(ThreeDFrontDataset):
     def __init__(self, npz_dir, transform=None, split='train', padded_length=None, num_cate=31):
