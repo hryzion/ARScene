@@ -109,6 +109,19 @@ def denormalize_tokens(obj_tokens, stats):
     return denorm
 
 
+def adjust_size_by_rotation(size: np.ndarray, rotation: float, tol=0.1):
+    """
+    如果 rotation 接近 ±pi/2，则交换 size[0] 和 size[2]
+    size = [sx, sy, sz]，其中 sy 为高度不变
+    """
+    r = (rotation+ np.pi) % np.pi  # 归一化到 [0, pi)
+
+    if abs(r - np.pi / 2) < tol:
+        size = size.copy()
+        size[[0, 2]] = size[[2, 0]]  # 交换 x,z
+
+    return size
+
 
 def get_room_attributes(room,use_objlat=True,atiss=False):
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
@@ -452,8 +465,11 @@ def decode_obj_token(obj_token, use_objlat = True):
     bbox_max = translate+size/2
     bbox_min = translate-size/2
 
+    size = adjust_size_by_rotation(size, rotation[0])
+
+
     coarse_semantic = THREED_FRONT_CATEGORY[np.argmax(cs)]
-    q_size =  abs(bbox_max - bbox_min)
+    q_size =  abs(size)
     model_id = get_modelid_by_latent_and_size(latent, q_size, coarse_semantic) if use_objlat else get_modelid_by_size(q_size, coarse_semantic)
 
     # print(rotation)

@@ -4,10 +4,12 @@ __pycache__
 datasets/models
 datasets/figures
 datasets/atiss*
-visualizations
+visualizations/
 *.npy
 datasets/processed_wo_lat
 datasets/processed_wi_lat
 wandb/
 pretrained/
 networks/drifting/sanity_check
+datasets/Levels2021
+.vscode/

@@ -10,7 +10,7 @@ def parse_arguments():
     args = parser.parse_args()
     return args
 
-DATA_DIR =  '/mnt/disk-1/zhx24/dataset/3dfront/Levels2021'
+DATA_DIR =  './datasets/Levels2021'
 #'../3DFront/scenes'#rf"D:\zhx_workspace\3DScenePlatformDev\dataset\Levels2021"
 
 

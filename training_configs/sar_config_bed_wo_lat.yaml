@@ -10,7 +10,7 @@ model:
   norm_eps: 1e-6
   attn_l2_norm: False
   use_prior_cluster: False
-  word_dim: 512
+  word_dim: 1024
 
   feat_extractor: resnet18
   bottleneck : residual-vae
@@ -41,14 +41,14 @@ dataset:
   padded_length: 27
 
 super_parameters:
-  epochs: 4000
+  epochs: 3000
   batch_size: 128
   learning_rate: 0.0001
   weight_decay: 0.00001
   cuda: 0
 
 save:
-  save_folder: ./pretrained/sceneGPT/depth_16_worddim_512_bedroom_wo_lat_uncondition_exp2
+  save_folder: ./pretrained/sceneGPT/
 
 text_condition: false
 room_mask_condition: true

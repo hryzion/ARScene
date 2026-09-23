@@ -32,11 +32,12 @@ model:
     quant:
       vq_beta: 1
       ema_decay: 0.95
-    pretrained_path: ./pretrained/vqvae/residual_vq_livingroom_wo_lat/vqvae.pth
+    pretrained_path: ./pretrained/vqvae/residual_vq_diningroom_wo_lat_vocab2048/vqvae.pth
+
 dataset:
-  filter_fn: livingroom
-  dataset_dir: ./datasets/processed_livingroom
-  use_objlat: false
+  filter_fn: diningroom
+  dataset_dir: ./datasets/processed_diningroom
+  use_objlat: False
   attr_dim: 107
   padded_length: 27
 

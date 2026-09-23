@@ -11,6 +11,7 @@ from config import parse_arguments
 from utils import decode_obj_tokens_with_mask, visualize_result, pack_scene_json
 import os
 from torchvision import models
+import time
 
 
 
@@ -62,10 +63,23 @@ def main():
     TOKEN_DIM  = int(encoder_config.get('token_dim', 64))
     encoder_pretrained_path = encoder_config.get('pretrained_path', None)
 
-    # --------------------- save -----------------------
+    # --------------------- dataset -----------------------
+    dataset_config = config.get('dataset', {})
+    dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
+    dataset_padded_length = dataset_config.get('padded_length', None)
+    dataset_filter = dataset_config.get('filter_fn',"all")
 
+
+    # --------------------- save -----------------------
     save_config = config.get('save', {})
     save_folder = save_config.get('save_folder',"./pretrained/sceneautoregressive/")
+    tag = f"depth{sar_depth}_worddim{word_dim}_{dataset_filter}_vocab{NUM_EMBEDDINGS}"
+    if not dataset_config.get('use_objlat'):
+        tag+='_wo_lat'
+    if not config.get("text_condition", False):
+        tag+='_wo_textc'
+        
+    save_folder = os.path.join(save_folder, tag)
     os.makedirs(save_folder,exist_ok=True)
 
     with open(os.path.join(save_folder, 'config.yaml'), "w", encoding="utf-8") as f:
@@ -77,11 +91,6 @@ def main():
     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else 'cpu')
 
 
-    # --------------------- dataset -----------------------
-    dataset_config = config.get('dataset', {})
-    dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
-    dataset_padded_length = dataset_config.get('padded_length', None)
-    dataset_filter = dataset_config.get('filter_fn',"all")
 
     if not dataset_config.get('use_objlat'):
         dataset_dir += '_wo_lat'
@@ -94,7 +103,7 @@ def main():
 
     test_dataset = load_test_dataset(dataset_dir,dataset_padded_length)
     test_dataset.transform = normalizer.transform_atiss
-    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
+    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=True, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
     ae_encoder = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, test_mode=True, configs=config,num_bottleneck=num_bn, num_recon=num_recon).to(device)
     ae_encoder.load_state_dict(torch.load(f'{encoder_pretrained_path}', map_location=device))
@@ -120,40 +129,30 @@ def main():
         num_codebooks = sar.vae_token_sequentializer.num_codebooks, 
         vocab_size = sar.vae_token_sequentializer.vocab_size
     )
+
+    total_time = 0.
+    batch_num = 250
     with torch.no_grad():
         print("start_test")
         for batch_idx, batch in enumerate(test_loader):
+            if batch_idx+1>batch_num:
+                break
             room_name = batch['room_name']
             room_shape = batch['room_shape'].to(device)
             obj_tokens = batch['obj_tokens'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             text_desc = batch['text_desc']
 
-            # token_map = sar.vae.encode_obj_tokens(obj_tokens, padding_mask=attention_mask)
-            # residual_fm_gt_list = sar.vae_token_sequentializer.generate_residual_fm_gt(token_map, padding_mask=key_padding_mask)
-            # # print("ZHX Note: after generate gt")
-            # fhat_from_residual = sar.vae_token_sequentializer.get_fhat_from_residual_fm(residual_fm_gt_list, padding_mask=key_padding_mask)
-            # # print(fhat_from_residual.shape)
-            # recon_from_residual = sar.vae.fhat_to_img(f_hat=fhat_from_residual, padding_mask=attention_mask)
-            # # print(recon_from_residual.shape)
+            torch.cuda.synchronize()
+            start = time.time()
+            infer_room, infer_mask_prob,_ = sar.auto_regressive_inference(B = 4, test_desc=text_desc, room_mask=room_shape,cfg=0,top_k=900, top_p=0.95)
+            torch.cuda.synchronize()
+            end = time.time()
+            infer_time = end-start
 
+            print(f"Batch {batch_idx+1}, Inference time: {infer_time}s.")
+            total_time+=infer_time
 
-            # x_wo_first, mask_gt = sar.vae_token_sequentializer.generate_sar_input(residual_fm_gt_list, padding_mask=key_padding_mask)
-
-
-
-            # residual_fm_gt = torch.cat(residual_fm_gt_list, dim = 1)
-            # x_pred, mask_pred = sar(x_wo_first,text_desc, room_shape, key_padding_mask =mask_gt)
-            # loss, loss_dict = criterion(x_pred, mask_pred, residual_fm_gt, mask_gt)
-            # # print(loss_dict)
-            # pred_mask = mask_pred.argmax(dim=2).bool()[:,-sar.padded_length-1:]
-            # # print(pred_mask.shape)
-            # print(x_pred[0,0])
-            # print(residual_fm_gt[0,0])
-            # print(F.mse_loss(x_pred[0,0] ,residual_fm_gt[0,0]))
-
-            # exit()
-            infer_room, infer_mask_prob,_ = sar.auto_regressive_inference(B = 4, test_desc=text_desc, room_mask=None,cfg=0,top_k=900, top_p=0.95)
             # print(infer_mask.shape)
             infer_valid_mask = (infer_mask_prob > 0.5).bool().squeeze(-1)
 
@@ -183,7 +182,8 @@ def main():
             # visualize_result(decoded_recon, raw_data=decoded_raw,room_name=room_name, save_dir=f'{save_folder}/topdown_recon')
 
             print(f"Processed batch {batch_idx+1}/{len(test_loader)}")
-
+    avg_time = total_time / batch_num
+    print(f"Average Inference Time per Batch: {avg_time}s.")
 
             
 if __name__ == "__main__":

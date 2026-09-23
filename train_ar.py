@@ -14,6 +14,7 @@ import wandb
 from torchvision import models
 from losses.ar_loss import AutoregressiveTokenLoss, MultiCodebookCrossEntropy
 import torch.nn.functional as F
+from utils import count_trainable_params
 
 def train_model(
     model : RoomLayoutAutoRegressiveNet,
@@ -156,11 +157,28 @@ if __name__ == "__main__":
     TOKEN_DIM  = int(encoder_config.get('token_dim', 64))
 
     encoder_pretrained_path = encoder_config.get('pretrained_path', None)
+    # --------------------- dataset -----------------------
+    dataset_config = config.get('dataset', {})
+    dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
+    dataset_padded_length = dataset_config.get('padded_length', None)
+    dataset_filter = dataset_config.get('filter_fn',"all")
+
+    if not dataset_config.get('use_objlat'):
+        dataset_dir += '_wo_lat'
 
     # --------------------- save -----------------------
 
     save_config = config.get('save', {})
     save_folder = save_config.get('save_folder',"./pretrained/sceneautoregressive/")
+
+    tag = f"depth{sar_depth}_worddim{word_dim}_{dataset_filter}_vocab{NUM_EMBEDDINGS}"
+    if not dataset_config.get('use_objlat'):
+        tag+='_wo_lat'
+    if not config.get("text_condition", False):
+        tag+='_wo_textc'
+        
+    save_folder = os.path.join(save_folder, tag)
+
     os.makedirs(save_folder,exist_ok=True)
 
     with open(os.path.join(save_folder, 'config.yaml'), "w", encoding="utf-8") as f:
@@ -172,14 +190,6 @@ if __name__ == "__main__":
     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else 'cpu')
 
 
-    # --------------------- dataset -----------------------
-    dataset_config = config.get('dataset', {})
-    dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
-    dataset_padded_length = dataset_config.get('padded_length', None)
-    dataset_filter = dataset_config.get('filter_fn',"all")
-
-    if not dataset_config.get('use_objlat'):
-        dataset_dir += '_wo_lat'
 
     train_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='train',padded_length=dataset_padded_length)
     val_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='test',padded_length=dataset_padded_length)
@@ -221,13 +231,17 @@ if __name__ == "__main__":
     )
     
     
-    name = f"SceneGPT_{dataset_filter}_depth{sar_depth}_worddim{word_dim}"
+    name = f"SceneGPT_{dataset_filter}_depth{sar_depth}_worddim{word_dim}_vocab{NUM_EMBEDDINGS}"
     if not config.get("text_condition", False):
         name+='_wo_textc'
     if dataset_config.get('use_objlat'):
         name+='_lat64'
     if args.wandb:
         wandb.init(project="SceneGPT" ,name=name)
+
+    total_p = count_trainable_params(sar)/1_000_000
+    print(f"[ INFO ] Total Training Parameters: {total_p:.2f}M")
+    # exit()
 
     train_model(
         model=sar,

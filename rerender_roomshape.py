@@ -20,7 +20,7 @@ def rerender_roomshape(target_dir, filter = '', type_filter = "bedroom"):
         centralize_room(room)
         if type_filter == 'bedroom':
             fixed_size = 3.5
-        elif type_filter == 'livingroom':
+        elif type_filter == 'livingroom' or type_filter == 'diningroom':
             fixed_size = 5
         elif type_filter == 'library':
             fixed_size = 3.5
