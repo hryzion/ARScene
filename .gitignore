@@ -13,3 +13,6 @@ pretrained/
 networks/drifting/sanity_check
 datasets/Levels2021
 .vscode/
+node_modules
+
+package*
