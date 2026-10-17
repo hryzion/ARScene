@@ -6,7 +6,7 @@ import yaml
 from torch.utils.data import DataLoader
 
 from config import parse_arguments
-from datasets.SceneTokenNormalizer import SceneTokenNormalizer
+from datasets.midiffusion import load_midiffusion_preprocessing
 from train_midiffusion import (
     build_midiffusion_model,
     get_dataset_class,
@@ -70,28 +70,11 @@ def main():
 
     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else "cpu")
 
-    obj_feat = 64 if use_objlat else 0
-    normalizer = SceneTokenNormalizer(
-        category_dim=dataset_num_class + 2,
-        obj_feat=obj_feat,
-        rotation_mode="sincos",
-        use_objlat=use_objlat,
-        atiss=True,
-    )
-    normalizer_path = os.path.join(dataset_dir, "normalizer_stats_atiss.json")
-    if os.path.exists(normalizer_path):
-        normalizer.load(normalizer_path)
-    else:
-        raise FileNotFoundError(
-            f"Normalizer stats file not found at {normalizer_path}. "
-            "Please preprocess or train first."
-        )
-
     dataset_class = get_dataset_class(config)
     test_dataset = load_test_dataset(
         config, dataset_dir, dataset_padded_length, len(THREED_FRONT_CATEGORY)
     )
-    test_dataset.transform = normalizer.transform_atiss
+    normalizer = load_midiffusion_preprocessing(config, test_dataset, save_folder)
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,

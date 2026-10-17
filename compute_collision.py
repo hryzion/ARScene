@@ -1,244 +1,214 @@
-import os
-import json
+"""Pairwise intersection volumes for y-up OBBs rotated around the y axis.
+
+Sizes are full side lengths in metres; yaw is in radians. Intersection volume
+is XZ polygon intersection area times Y overlap. Sum over unordered pairs,
+including repeated contributions where three or more boxes overlap.
+"""
+
+import argparse
+from dataclasses import dataclass
 import itertools
+import json
+from pathlib import Path
+
 import numpy as np
-from tqdm import tqdm
-from utils import load_scene_json, divide_scene_json_to_rooms,centralize_room
-from config import DATA_DIR
 from shapely.geometry import Polygon
-import matplotlib.pyplot as plt
+from tqdm import tqdm
 
-def bbox_to_polygon_xz(bbox):
-    """
-    把3D bbox转成 xz 平面的矩形 polygon
-    """
-    min_pt = bbox["min"]
-    max_pt = bbox["max"]
 
-    x1, z1 = min_pt[0], min_pt[2]
-    x2, z2 = max_pt[0], max_pt[2]
+@dataclass(frozen=True)
+class OBB:
+    footprint: Polygon
+    y_min: float
+    y_max: float
+    volume: float
 
-    return Polygon([
-        (x1, z1),
-        (x2, z1),
-        (x2, z2),
-        (x1, z2)
-    ])
 
+def object_to_obb(obj):
+    """Read explicit geometry; never infer a local OBB from a world AABB."""
+    if isinstance(obj, OBB):
+        return obj
+    geometry = obj.get('obb', obj)
+    if not all(key in geometry for key in ('position', 'size', 'yaw')):
+        raise ValueError('OBB requires position, size (full local side lengths), and yaw; '
+                         'bbox min/max alone cannot recover the oriented box')
+    position = np.asarray(geometry['position'], dtype=np.float64)
+    size = np.asarray(geometry['size'], dtype=np.float64)
+    yaw = np.asarray(geometry['yaw'], dtype=np.float64)
+    if (position.shape != (3,) or size.shape != (3,) or yaw.ndim != 0
+            or not np.isfinite(position).all() or not np.isfinite(size).all()
+            or not np.isfinite(yaw) or np.any(size <= 0)):
+        raise ValueError('OBB needs three finite centre coordinates, positive sizes and finite scalar yaw')
+    c, s = np.cos(yaw), np.sin(yaw)
+    local = np.array([[-.5, -.5], [.5, -.5], [.5, .5], [-.5, .5]]) * size[[0, 2]]
+    # Positive yaw maps local +x towards world -z, matching both samplers.
+    rotation_xz = np.array([[c, s], [-s, c]])
+    footprint = Polygon(local @ rotation_xz.T + position[[0, 2]])
+    return OBB(footprint, float(position[1] - size[1] / 2),
+               float(position[1] + size[1] / 2), float(np.prod(size)))
+
+
+def obb_to_polygon_xz(obb):
+    return object_to_obb(obb).footprint
+
+
+def compute_intersection(obb1, obb2):
+    """Return (positive overlap, volume in m^3) for upright yaw-only OBBs."""
+    a, b = object_to_obb(obb1), object_to_obb(obb2)
+    height = min(a.y_max, b.y_max) - max(a.y_min, b.y_min)
+    if height <= 0:
+        return False, 0.0
+    # Cheap rejection only; positive AABB overlap never counts as OBB overlap.
+    ax0, az0, ax1, az1 = a.footprint.bounds
+    bx0, bz0, bx1, bz1 = b.footprint.bounds
+    if min(ax1, bx1) <= max(ax0, bx0) or min(az1, bz1) <= max(az0, bz0):
+        return False, 0.0
+    area = a.footprint.intersection(b.footprint).area
+    volume = float(area * height)
+    return volume > 0, volume
 
 
 def compute_aabb_volume(bbox):
-    min_pt = np.array(bbox["min"])
-    max_pt = np.array(bbox["max"])
-    return np.prod(max_pt - min_pt)
+    """Legacy helper; not used in the OBB collision metric."""
+    return float(np.prod(np.asarray(bbox['max']) - np.asarray(bbox['min'])))
 
 
-def compute_intersection(bbox1, bbox2):
-    min1, max1 = np.array(bbox1["min"]), np.array(bbox1["max"])
-    min2, max2 = np.array(bbox2["min"]), np.array(bbox2["max"])
-
-    overlap = np.minimum(max1, max2) - np.maximum(min1, min2)
-
-    if np.all(overlap > 0):
-        inter_vol = np.prod(overlap)
-        return True, inter_vol
-    else:
-        return False, 0.0
+def compute_aabb_intersection(bbox1, bbox2):
+    """Previous formula, retained explicitly for reference checks only."""
+    overlap = (np.minimum(bbox1['max'], bbox2['max'])
+               - np.maximum(bbox1['min'], bbox2['min']))
+    return (True, float(np.prod(overlap))) if np.all(overlap > 0) else (False, 0.0)
 
 
-def compute_scene_metrics(json_path):
-
-    room_name = os.path.basename(json_path)
+def _legacy_room_polygon(json_path):
+    # Collision-only evaluation needs neither source rooms nor asset metadata.
+    from utils import load_scene_json, divide_scene_json_to_rooms, centralize_room
+    from config import DATA_DIR
+    room_name = Path(json_path).name
     scene_origin = room_name.split('_')[0]
     room_id = int(room_name.split('_')[1].split('room')[-1])
-
-    scene_json = load_scene_json(os.path.join(DATA_DIR, scene_origin + '.json'))
-    rooms = divide_scene_json_to_rooms(scene_json)
+    rooms = divide_scene_json_to_rooms(load_scene_json(str(Path(DATA_DIR) / (scene_origin + '.json'))))
     room = rooms[room_id]
     centralize_room(room)
+    return Polygon(room['roomShape'])
 
-    room_shape = room['roomShape']
-    room_polygon = Polygon(room_shape)
 
-    with open(json_path, 'r') as f:
-        data = json.load(f)
+def _rooms(data):
+    if 'objects' in data:
+        return [(data['objects'], data.get('condition_boundary'))]
+    if 'rooms' in data:
+        return [(room.get('objList', []), room.get('roomShape')) for room in data['rooms']]
+    raise ValueError('Expected a sampled objects list or a rooms/objList scene')
 
-    # ===== 统计量 =====
-    total_collision_volume = 0.0
-    total_oob_area = 0.0
 
-    for room_data in data.get("rooms", []):
-        objs = room_data.get("objList", [])
-
-        # ===== collision volume =====
-        for obj1, obj2 in itertools.combinations(objs, 2):
-            bbox1 = obj1.get("bbox")
-            bbox2 = obj2.get("bbox")
-
-            if bbox1 is None or bbox2 is None:
+def compute_scene_metrics(json_path, *, collision_only=False):
+    data = json.loads(Path(json_path).read_text())
+    total_volume, total_oob = 0.0, None if collision_only else 0.0
+    objects_count, pairs_count, collisions = 0, 0, 0
+    for objs, boundary in _rooms(data):
+        boxes = []
+        for index, obj in enumerate(objs):
+            try:
+                boxes.append(object_to_obb(obj))
+            except (ValueError, TypeError) as exc:
+                raise ValueError(f'{json_path}: object {index}: {exc}') from exc
+        objects_count += len(boxes)
+        pairs_count += len(boxes) * (len(boxes) - 1) // 2
+        for a, b in itertools.combinations(boxes, 2):
+            collided, volume = compute_intersection(a, b)
+            total_volume += volume
+            collisions += int(collided)
+        if collision_only:
+            continue
+        if boundary is not None:
+            polygon = Polygon(boundary)
+        elif 'objects' in data:
+            raise ValueError('No reference room boundary in this unconditional scene; use --collision-only')
+        else:
+            polygon = _legacy_room_polygon(json_path)
+        for obj, box in zip(objs, boxes):
+            if obj.get('category', obj.get('coarseSemantic', '')).lower() in ('window', 'door'):
                 continue
+            outside_area = box.footprint.area - box.footprint.intersection(polygon).area
+            if outside_area > .01:  # Retain the previous OOB threshold, in m^2.
+                total_oob += outside_area
+    return {'sample_id': data.get('sample_id', Path(json_path).stem),
+            'status': data.get('status'), 'num_objects': objects_count,
+            'num_object_pairs': pairs_count, 'num_colliding_pairs': collisions,
+            'has_collision': collisions > 0, 'total_collision_volume': total_volume,
+            'total_oob_area': total_oob}
 
-            is_collide, inter_vol = compute_intersection(bbox1, bbox2)
 
-            if is_collide:
-                total_collision_volume += inter_vol
-
-        # ===== OOB area =====
-        for obj in objs:
-            bbox = obj.get("bbox")
-            if bbox is None:
-                continue
-
-            if obj['coarseSemantic']=='Window' or obj['coarseSemantic']=='Door':
-                continue
-
-            bbox_poly = bbox_to_polygon_xz(bbox)
-
-            inter_area = bbox_poly.intersection(room_polygon).area
-            bbox_area = bbox_poly.area
-
-            if inter_area < bbox_area:
-                
-                outside_area = bbox_area - inter_area
-                if outside_area > 0.01:
-                    # print(obj['coarseSemantic'])
-                    # print(json_path)
-                    # print(bbox)
-                    # print(room_shape)
-                    # print(outside_area)
-                    # print()
-                    total_oob_area += outside_area
-
-    return {
-        "total_collision_volume": total_collision_volume,
-        "total_oob_area": total_oob_area
-    }
-
+def evaluate_dataset(src_dir, *, collision_only=False, details_path=None):
+    paths = sorted(Path(src_dir).glob('*.json'))
+    if not paths:
+        raise ValueError(f'No scene JSON files in {src_dir}; use the samples/scenes directory')
+    metrics = [compute_scene_metrics(path, collision_only=collision_only) for path in tqdm(paths)]
+    count = len(metrics)
+    volume = sum(row['total_collision_volume'] for row in metrics)
+    oob = None if collision_only else sum(row['total_oob_area'] for row in metrics)
+    pairs = sum(row['num_object_pairs'] for row in metrics)
+    collisions = sum(row['num_colliding_pairs'] for row in metrics)
+    collision_scenes = sum(row['has_collision'] for row in metrics)
+    objects = sum(row['num_objects'] for row in metrics)
+    if details_path is not None:
+        details_path = Path(details_path)
+        details_path.parent.mkdir(parents=True, exist_ok=True)
+        details_path.write_text(''.join(json.dumps({'file': path.name, **row}, allow_nan=False) + '\n'
+                                        for path, row in zip(paths, metrics)))
+    return {'metric': 'upright_yaw_obb_pairwise_intersection_volume', 'volume_unit': 'm^3',
+            'volume_aggregation': 'sum over unordered object pairs, not union volume',
+            'categories': 'all objects, including lamps; no category exclusions for collisions',
+            'source': str(Path(src_dir).resolve()), 'num_scenes': count,
+            'total_collision_volume': volume, 'avg_collision_volume_per_scene': volume / count,
+            'total_objects': objects, 'avg_objects_per_scene': objects / count,
+            'num_scenes_with_collisions': collision_scenes, 'scene_collision_rate': collision_scenes / count,
+            'total_object_pairs': pairs, 'num_colliding_pairs': collisions,
+            'object_pair_collision_rate': collisions / pairs if pairs else 0.,
+            'total_oob_area': oob, 'avg_oob_area_per_scene': None if oob is None else oob / count}
 
 
 def plot_room_and_bboxes(json_path, save_path):
-    """
-    可视化 room + bbox
+    """Plot actual rotated OBB footprints; reference boundary when supplied."""
+    import matplotlib.pyplot as plt
+    data = json.loads(Path(json_path).read_text())
+    fig, ax = plt.subplots(figsize=(6, 6))
+    for objs, boundary in _rooms(data):
+        if boundary is not None:
+            ax.plot(*Polygon(boundary).exterior.xy, linewidth=2, label='Reference boundary')
+        for obj in objs:
+            ax.plot(*obb_to_polygon_xz(obj).exterior.xy, linewidth=1)
+    ax.set(aspect='equal', title='OBB layout', xlabel='X (m)', ylabel='Z (m)')
+    ax.grid(alpha=.3)
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=200)
+    plt.close(fig)
 
-    :param json_path: 生成结果json
-    :param room_shape: [(x, y), ...] polygon
-    :param save_path: 保存路径
-    """
-
-    room_name = os.path.basename(json_path)
-    scene_origin = room_name.split('_')[0]
-    room_id = int(room_name.split('_')[1].split('room')[-1])
-
-    scene_json = load_scene_json(os.path.join(DATA_DIR, scene_origin+'.json'))
-    rooms = divide_scene_json_to_rooms(scene_json)
-    room = rooms[room_id]
-    
-    centralize_room(room)
-
-    room_shape = room['roomShape']  # [(x,y), ...]
-
-    
-
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-
-    plt.figure(figsize=(6, 6))
-
-    # ===== 画 room polygon =====
-    xs = [p[0] for p in room_shape] + [room_shape[0][0]]
-    ys = [p[1] for p in room_shape] + [room_shape[0][1]]
-
-    plt.plot(xs, ys, linewidth=2, label="Room")
-
-    # ===== 画 bbox =====
-    for room in data.get("rooms", []):
-        for obj in room.get("objList", []):
-            bbox = obj.get("bbox")
-            if obj['coarseSemantic']=='Window' or obj['coarseSemantic']=='Door':
-                continue
-            if bbox is None:
-                continue
-
-            min_pt = bbox["min"]
-            max_pt = bbox["max"]
-
-            # 用 x-z 平面
-            x1, z1 = min_pt[0], min_pt[2]
-            x2, z2 = max_pt[0], max_pt[2]
-
-            box_x = [x1, x2, x2, x1, x1]
-            box_y = [z1, z1, z2, z2, z1]
-
-            plt.plot(box_x, box_y, linewidth=1)
-
-    # ===== 美化 =====
-    plt.gca().set_aspect('equal', adjustable='box')
-
-    plt.title("Room Layout", fontsize=14)
-    plt.xlabel("X")
-    plt.ylabel("Z")
-
-    plt.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
-
-    # 去掉上右边框
-    ax = plt.gca()
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-
-    plt.tight_layout()
-
-    plt.savefig(save_path, dpi=300)
-    plt.close()
 
 def draw_dataset(src_dir):
-    json_files = [f for f in os.listdir(src_dir) if f.endswith('.json')]
-    save_dir = os.path.join(src_dir,'figures')
-    os.makedirs(os.path.join(src_dir,'figures'), exist_ok=True)
-    for fname in tqdm(json_files):
-        fpath = os.path.join(src_dir, fname)
-        save_path = os.path.join(save_dir, fname[:-5]+'.png')
-        plot_room_and_bboxes(fpath, save_path)
+    output = Path(src_dir) / 'figures'
+    output.mkdir(exist_ok=True)
+    for path in tqdm(sorted(Path(src_dir).glob('*.json'))):
+        plot_room_and_bboxes(path, output / (path.stem + '.png'))
 
-def evaluate_dataset(src_dir):
-    json_files = [f for f in os.listdir(src_dir) if f.endswith('.json')]
 
-    total_collision_volume_all = 0.0
-    total_oob_area_all = 0.0
-
-    for fname in tqdm(json_files):
-        fpath = os.path.join(src_dir, fname)
-
-        metrics = compute_scene_metrics(fpath)
-
-        total_collision_volume_all += metrics["total_collision_volume"]
-        total_oob_area_all += metrics["total_oob_area"]
-        # if metrics["total_oob_area"]>0.5:
-            # print(fname)
-            # plot_room_and_bboxes(fpath, f'./test/fig/{fname[:-5]}.png')
-
-    return {
-        "num_scenes": len(json_files),
-        "total_collision_volume": total_collision_volume_all,
-        "total_oob_area": total_oob_area_all,
-        "avg_collision_volume_per_scene": total_collision_volume_all / (len(json_files) + 1e-8),
-        "avg_oob_area_per_scene": total_oob_area_all / (len(json_files) + 1e-8),
-    }
-
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--src', type=str, required=True)
-    parser.add_argument('--origin', action='store_true')
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--src', required=True, help='Directory containing scene JSON files, e.g. samples/scenes')
+    parser.add_argument('--collision-only', action='store_true', help='Do not compute OOB when no reference boundary exists')
+    parser.add_argument('--output', type=Path, help='Save aggregate JSON outside the input scenes directory')
+    parser.add_argument('--details', type=Path, help='Save per-scene JSONL metrics')
+    parser.add_argument('--origin', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
-    # draw_dataset(args.src)
+    if args.output is not None and args.output.resolve().parent == Path(args.src).resolve():
+        parser.error('--output must be outside --src so the report is not read as a scene on the next run')
+    results = evaluate_dataset(args.src, collision_only=args.collision_only, details_path=args.details)
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(results, indent=2, ensure_ascii=False, allow_nan=False) + '\n')
+    print(json.dumps(results, indent=2, ensure_ascii=False, allow_nan=False))
 
-    results = evaluate_dataset(args.src)
 
-    print("\n===== Dataset Collision Metrics =====")
-    for k, v in results.items():
-        print(f"{k}: {v:.6f}" if isinstance(v, float) else f"{k}: {v}")
-
-    print(f'& {results["avg_collision_volume_per_scene"]:.3f} & {results["avg_oob_area_per_scene"]:.3f}')
-
+if __name__ == '__main__':
+    main()
 

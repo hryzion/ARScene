@@ -1,0 +1,89 @@
+# MiDiffusion 12 layers x 768 hidden, 8 heads, FFN 3072; unconditional livingroom.
+dataset:
+  root: ./datasets/atiss_livingroom_obb_v2_wo_lat
+  use_objlat: false
+  filter_fn: livingroom
+  num_class: 31
+  padded_length: 27
+  augmentations:
+  - fixed_rotations
+  - permutation
+data:
+  dataset_type: cached_threedfront
+  encoding_type: cached_diffusion_cosin_angle_wocm
+  dataset_directory: livingroom
+  annotation_file: livingroom_threed_front_splits.csv
+  augmentations:
+  - fixed_rotations
+  - permutation
+  train_stats: dataset_stats.txt
+  room_layout_size: 64,64
+network:
+  type: midiffusion_mixed
+  objectness_dim: 0
+  class_dim: 33
+  translation_dim: 3
+  size_dim: 3
+  angle_dim: 2
+  objfeat_dim: 0
+  sample_num_points: 27
+  room_mask_condition: false
+  room_latent_dim: 64
+  latent_dim: 64
+  position_condition: false
+  position_emb_dim: 0
+  learnable_embedding: false
+  time_num: 1000
+  diffusion_semantic_kwargs:
+    att_1: 0.99999
+    att_T: 9.0e-06
+    ctt_1: 9.0e-06
+    ctt_T: 0.99999
+    model_output_type: x0
+    mask_weight: 1
+    auxiliary_loss_weight: 0.0005
+    adaptive_auxiliary_loss: true
+  diffusion_geometric_kwargs:
+    schedule_type: linear
+    beta_start: 0.0001
+    beta_end: 0.02
+    loss_type: mse
+    model_mean_type: eps
+    model_var_type: fixedsmall
+    loss_separate: true
+    loss_iou: false
+  net_type: transformer
+  net_kwargs:
+    seperate_all: true
+    n_layer: 12
+    n_embd: 768
+    n_head: 8
+    dim_feedforward: 3072
+    dropout: 0.1
+    activate: GELU
+    timestep_type: adalayernorm_abs
+    mlp_type: fc
+training:
+  max_steps: 900000
+  output: ./pretrained/midiffusion/livingroom_unconditional_12x768_900k
+  split: train
+  batch_size: 128
+  seed: 42
+  precision: fp32
+  cpu_threads: 4
+  optimizer: Adam
+  weight_decay: 0.0
+  lr: 0.0002
+  schedule: step
+  lr_step: 90000
+  lr_decay: 0.5
+  max_grad_norm: 10
+  log_every: 100
+  save_every: 1000
+  keep_every: 100000
+  validate_every: 5000
+validation:
+  split: test
+  batch_size: 128
+logger:
+  type: jsonl

@@ -1,0 +1,32 @@
+dataset:
+  root: datasets/processed_reltree_bedroom_smoke_v2
+model:
+  architecture: node_attribute_ar_v2
+  width: 64
+  layers: 2
+  heads: 4
+  ff_multiplier: 2
+  dropout: 0.0
+  max_depth: 32
+  boundary_points: 16
+  attribute_layers: 2
+  attribute_width: 64
+  attribute_heads: 4
+  attribute_ff_multiplier: 2
+training:
+  device: cuda:0
+  precision: fp32
+  batch_size: 4
+  learning_rate: 0.003
+  weight_decay: 0.001
+  grad_clip: 1.0
+  epochs: 500
+  max_steps: 120
+  validate_every: 40
+  log_every: 20
+  seed: 42
+  cpu_threads: 4
+  num_workers: 0
+  sample_count: 4
+  sample_max_depth: 10
+  output: networks/reltree/runs/smoke

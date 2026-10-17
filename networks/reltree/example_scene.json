@@ -1,0 +1,11 @@
+{
+  "categories": ["bed", "nightstand", "desk", "chair", "lamp"],
+  "room": {"position": [0, 1.5, 0], "size": [8, 3, 6], "yaw": 0},
+  "objects": [
+    {"object_id": "bed-1", "category": "bed", "position": [-2, 0.5, 0], "size": [1.8, 1, 2.2], "yaw": 0},
+    {"object_id": "nightstand-1", "category": "nightstand", "position": [-3.2, 0.3, 0.6], "size": [0.5, 0.6, 0.5], "yaw": 0},
+    {"object_id": "lamp-1", "category": "lamp", "position": [-3.2, 0.8, 0.6], "size": [0.2, 0.4, 0.2], "yaw": 0},
+    {"object_id": "desk-1", "category": "desk", "position": [2, 0.4, -1], "size": [1.4, 0.8, 0.7], "yaw": 0},
+    {"object_id": "chair-1", "category": "chair", "position": [2, 0.45, 0], "size": [0.6, 0.9, 0.6], "yaw": 3.141592653589793}
+  ]
+}

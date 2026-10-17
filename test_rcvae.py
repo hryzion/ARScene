@@ -69,7 +69,7 @@ def main():
         dataset_dir += '_wo_lat'
 
     obj_feat = 64 if dataset_config['use_objlat'] else 0
-    normalizer = SceneTokenNormalizer(category_dim=31,obj_feat=obj_feat, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
+    normalizer = SceneTokenNormalizer.from_config(config, category_dim=31,obj_feat=obj_feat, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
     if os.path.exists(f'{dataset_dir}/normalizer_stats.json'):
         normalizer.load(f'{dataset_dir}/normalizer_stats.json')
     else:

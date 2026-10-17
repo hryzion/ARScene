@@ -71,7 +71,7 @@ def main():
 
 
     obj_feat = 64 if dataset_config['use_objlat'] else 0
-    normalizer = SceneTokenNormalizer(category_dim=dataset_num_class+2,obj_feat=obj_feat, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
+    normalizer = SceneTokenNormalizer.from_config(config, category_dim=dataset_num_class+2,obj_feat=obj_feat, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
     if os.path.exists(f'{dataset_dir}/normalizer_stats_atiss.json'):
         normalizer.load(f'{dataset_dir}/normalizer_stats_atiss.json')
     else:

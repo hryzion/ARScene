@@ -1,0 +1,49 @@
+Use case: infographic-diagram.
+Create ONE polished, publication-quality computer vision research METHOD FIGURE for "RelTree", based strictly on the verified implementation described here. This is a scientific architecture diagram, not a promotional infographic. Wide landscape 16:9, ideally 3840 x 2160. White background, crisp vector-like linework, generous whitespace, highly readable English text, elegant sans-serif typography, properly typeset mathematical subscripts. Restrained consistent semantic colors: teal=room conditions, blue=ROOM/root, orange=SPLIT/group, green=OBJECT/furniture, violet=network modules, light gray=EMPTY/PAD. Use thin dark arrows and aligned panels. No glossy decorations, no watermark, no fabricated performance numbers. Make it beautiful and useful in a paper. Title: "RelTree: Room-Root Autoregressive Scene Generation". Small subtitle: "Functional binary trees · Fixed scalar tokens · Hierarchical autoregression". IMPORTANT USER REQUIREMENT: architectural hyperparameters must be symbolic, not concrete experiment values. Use L, D, H for the main backbone, L_a, D_a, H_a for the attribute decoder, M for boundary samples, K_R / K_r / K_θ / K_ℓ for quantization bins, C for category vocabulary, and p_drop for condition dropout. Three spatial dimensions and the seven relative geometry attributes are semantic definitions and should remain explicit.
+
+Composition: one integrated figure with a large MAIN MODEL PIPELINE across the upper 58% and three supporting panels across the lower 38%, with clear a/b/c/d panel labels. Prioritize legible labels and real arrows over dense prose. Exact architectural relationships and token definitions matter. Use symbolic hyperparameters throughout.
+
+(a) MAIN PIPELINE, flowing left-to-right:
+At left show a small irregular polygon floorplan with exactly schematic sampled boundary dots and outward normal arrows, label "Room condition". Under it, show "M boundary samples" and the four-dimensional feature "[x/s_0, z/s_0, n_x, n_z]" and "MLP 4 → D → D". A small separate "Room type" embedding is added to boundary embeddings and also gives one type token. Show resulting "M + 1 condition tokens". A smaller optional branch "Learned null condition" with label "Condition dropout: p_drop". Do NOT depict a raster-mask CNN or ResNet.
+Center-left, draw a horizontal token strip feeding ONE shared backbone. Visually distinguish three token roles: condition tokens, context tokens, and prediction queries. Include a learned "SOS" root query, blue "C_Room", orange/green "C_A", "C_B", and purple outlined "X_i" query. Mark the strip as "Logical sequence" rather than suggesting a required physical storage order. Under the query, show a compact inset: "X_i = Linear([Q_i ; Emb(z_{i−1})])" with dimensions "2D → D". Add short label "Parent attributes + role / depth / path / slot"; clarify the first node of EACH tree level uses "node SOS" as previous-node embedding. Q_i is a query from known parent attributes and tree position, not the current target.
+Center, draw a large lavender block "Masked Transformer backbone", subtitle "L layers · width D · H heads", small inner block or label "Pre-LN self-attention + FFN". Conditions and history use SAME self-attention, not a separate cross-attention network.
+To the right, show "h_SOS / h_i" → "Linear D → D_a" → ONE shared purple block "Causal attribute Transformer", subtitle "L_a layers · width D_a · H_a heads". It shares Transformer weights for the two branches below but has separate token embeddings and prediction heads. Clearly label "Shared decoder; separate embeddings & heads".
+Output branches:
+blue "Room: s_x → s_y → s_z", with "3 absolute size tokens". Feed a blue feedback arrow from this branch to "C_Room / generated history"; label "Predicted Room".
+green/orange "Node: type → class → r_x → r_y → r_z → Δθ → ℓ_x → ℓ_y → ℓ_z". This is a 9-attribute sequence for OBJECT. Feed completed-node output back to context/query construction, label "Update history; expand SPLIT".
+At far right show a small exact binary example tree: ROOM has two children SPLIT A and OBJECT B; SPLIT A has two OBJECT children C and D. Show breadth-first generation order "Room → A → B → C → D". Below or next to it a tasteful small isometric room with three color-coded furniture cuboids, label "Recursive box decoding" then "3D scene layout". These are schematic illustrative cuboids, not a claim of generated sample quality.
+Include one short line along the pipeline bottom: "Inference: predict Room → generate nodes level by level → autoregress attributes". Do not imply same-level nodes are sampled in parallel. The root is predicted even with room conditions; do NOT depict GT root replacement.
+
+(b) LOWER LEFT PANEL — "Tree representation & tokens", approx 46% of bottom width.
+At panel top a tiny diagram: furniture boxes → "Functional grouping (offline)" → binary tree → "BFS order". Functional grouping is deterministic semantic/geometric preprocessing, not a learned neural network; no GT objects are inference inputs.
+Then a beautifully aligned compact token table with 4 columns "Token / Attributes / Bins / Meaning":
+"ROOM" | "s_x, s_y, s_z" | "K_R per axis" | "Absolute full sizes (m)"
+"OBJECT" | "type, class, r(3), Δθ, ℓ(3)" | "C categories" | "Furniture leaf"
+"SPLIT" | "type, r(3), ℓ(3)" | "fixed Δθ = 0" | "Group box; 2 children"
+"EMPTY" | "type only" | "—" | "Singleton room's right slot"
+Below the table show concise symbolic quantization definitions: "r: K_r bins/axis   Δθ: K_θ bins   ℓ: K_ℓ bins/axis". The type head outputs SPLIT/OBJECT/EMPTY; ROOM is generated only at the root, PAD is packing only. State compactly "Types: SPLIT · OBJECT · EMPTY · ROOM · PAD".
+Also a small "Fixed scalar quantization; bin-midpoint decoding". No learned VQ codebook. This table must remain readable, omit nonessential decorations if needed.
+
+(c) LOWER MIDDLE PANEL — "Causal tree attention", approx 24% of bottom width.
+Show a small, precisely accurate binary visibility matrix for the example tree from (a). Rows "X_A, X_B, X_C, X_D". Columns grouped "cond | C_R | C_A | C_B | X_A | X_B | X_C | X_D".
+Filled squares mean visible. These are the EXACT row patterns:
+X_A: 1 1 0 0 1 0 0 0
+X_B: 1 1 0 0 1 1 0 0
+X_C: 1 1 1 1 0 0 1 0
+X_D: 1 1 1 1 0 0 1 1
+Use solid teal for cond column, soft blue filled squares for visible context, purple for visible query, white/light gray for masked. Under it write "Earlier-level contexts + causal same-level queries". Another small note: "Same-level previous node enters via shifted embedding". A small final note "Mask applied in every layer". Do not add current-target context visibility.
+
+(d) LOWER RIGHT PANEL — "Parent-relative geometry", approx 30% of bottom width.
+Draw a larger pale orange parent OBB with axes and a smaller green rotated child OBB, connected by an offset vector; make them clearly boxes, not abstract neural blocks. Under it typeset three encoding equations with clear element-wise notation:
+"r = R_y(−θ_p)(p_c − p_p) ⊘ s_p"
+"Δθ = wrap(θ_c − θ_p)"
+"ℓ = log(s_c ⊘ s_p)"
+Then decoding equations:
+"p_c = p_p + R_y(θ_p)(r ⊙ s_p)"
+"s_c = s_p ⊙ exp(ℓ)"
+"θ_c = wrap(θ_p + Δθ)"
+Small note "p: center · s: full size · θ: yaw". Emphasize in a small blue tag "Decode from generated parent boxes". Tiny root note if space allows: "Room: p=(0,s_y/2,0), yaw=0".
+
+Bottom margin one unobtrusive short training note across the page: "Training: teacher-forced contexts and attribute prefixes; categorical cross-entropy on valid queries." Keep this distinct from inference arrows.
+
+SCIENTIFIC CONSTRAINTS: This is current room_root_ar_v3: Room size prediction is retained, not overridden by GT. Architecture matches the actual implementation; model size labels are SYMBOLIC hyperparameters as requested by the user. Room condition is polygon+type or null; no GT furniture, object count, functional group labels, assets or latent codes fed at inference. No diffusion, collision guidance, frozen ResNet, VAE, learned tokenizer, separate training of tree grouping, or parallel same-level generation. Use a single shared L_a-layer attribute Transformer with separate root/node heads. Make arrows unambiguous, text exact, all panels aligned, no gibberish. Readability over unnecessary text; preserve symbolic architecture parameters, token order, symbolic token bins, attention matrix and geometry math.

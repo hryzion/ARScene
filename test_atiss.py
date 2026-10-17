@@ -1,124 +1,110 @@
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
-import torch.nn.functional as F
 from datasets.SceneTokenNormalizer import SceneTokenNormalizer
-# from networks.diffuscene.diffusion_scene_layout_ddpm import DiffusionSceneLayout_DDPM, train_on_batch, validate_on_batch
-from networks.scenelatent.autoregressive_transformer import AutoregressiveTransformer
-from networks.scenelatent import hidden2output_layer
-from datasets.Threed_front_dataset import ThreeDFrontDatasetRdm
-from config import parse_arguments
-from utils import decode_obj_tokens_with_mask, visualize_result, pack_scene_json
 import os
-from torchvision import models
 import time
 
 
 
-def load_test_dataset(dataset_dir,dataset_padded_length, num_classes=31):
-    return ThreeDFrontDatasetRdm(npz_dir=f'{dataset_dir}',split='test',padded_length = dataset_padded_length, num_cate=num_classes)
-
 def main():
+    import argparse
     import yaml
-    args = parse_arguments()
-    with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
+    from pathlib import Path
+    from datasets.atiss import ATISSDataset, dataset_root
+    from train_atiss import CHECKPOINT_FORMAT, build_model, load_checkpoint, load_for_inference
 
-    super_parameters = config['super_parameters']
-    BATCH_SIZE = int(super_parameters.get('batch_size', 64))
-    NUM_EPOCHS = int(super_parameters.get('epochs', 200))
-    LEARNING_RATE = float(super_parameters.get('learning_rate', 1e-4))
-
-
-    
-    # --------------------- model -----------------------
-
-    model_config = config['network']
-    model_type = model_config.get("type")
-    if model_type not in ['atiss']:
-        raise ValueError(f"Unsupported model type: {model_type}")
-
-
-    # --------------------- dataset -----------------------
-    dataset_config = config.get('dataset', {})
-    dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
-    dataset_padded_length = dataset_config.get('padded_length', None)
-    dataset_filter = dataset_config.get('filter_fn',"all")
-    dataset_num_class = dataset_config.get('num_class', 31)
-    if not dataset_config.get('use_objlat'):
-        dataset_dir += '_wo_lat'
-    tag = f'{model_config["type"]}_{dataset_config.get("filter_fn","all")}'
-    if not dataset_config.get('use_objlat'):
-        tag += '_wo_lat'
-    # --------------------- save -----------------------
-
-    save_config = config.get('save', {})
-    save_folder = save_config.get('save_folder',"./pretrained/sceneautoregressive/")
-    save_folder = os.path.join(save_folder, tag)
-    os.makedirs(save_folder,exist_ok=True)
-
-    with open(os.path.join(save_folder, 'config.yaml'), "w", encoding="utf-8") as f:
-        yaml.dump(config, f, allow_unicode=True)
-
-    save_path = os.path.join(save_folder, f"{model_config['type']}_{args.tag}.pth")
-    # os.makedirs(save_folder, exist_ok=True)
-    
-    device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else 'cpu')
-    batch_size = 1
-
-
-
-    obj_feat = 64 if dataset_config['use_objlat'] else 0
-    normalizer = SceneTokenNormalizer(category_dim=dataset_num_class+2,obj_feat=obj_feat, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
-    if os.path.exists(f'{dataset_dir}/normalizer_stats_atiss.json'):
-        normalizer.load(f'{dataset_dir}/normalizer_stats_atiss.json')
+    parser = argparse.ArgumentParser(description="Sample ATISS with checkpoint-owned conditioning and normalization")
+    parser.add_argument('--config', default='training_configs/atiss_livingroom.yaml')
+    parser.add_argument('--checkpoint', help='Full last.pt/best.pt or a legacy state_dict .pth')
+    parser.add_argument('--output', help='Directory for generated layouts and visualizations')
+    parser.add_argument('--tag', default='last')
+    parser.add_argument('--num', type=int, default=1000)
+    parser.add_argument('--cuda', type=int, default=0)
+    parser.add_argument('--device', help='cuda:N or cpu')
+    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--layout-only', action='store_true',
+                        help='Save metric layout NPZ files without asset retrieval or visualization dependencies')
+    args = parser.parse_args()
+    if args.num <= 0:
+        parser.error('--num must be positive')
+    if not args.layout_only:
+        from utils import decode_obj_tokens_with_mask, visualize_result, pack_scene_json
+    device = torch.device(args.device or (f'cuda:{args.cuda}' if torch.cuda.is_available() else 'cpu'))
+    # Full checkpoints are self-contained; --config is needed for legacy weights
+    # or to locate a run when no explicit checkpoint was supplied.
+    if args.checkpoint:
+        checkpoint_path = Path(args.checkpoint)
+        payload = load_checkpoint(checkpoint_path)
+        if payload.get('format') == CHECKPOINT_FORMAT:
+            config = payload['config']
+        else:
+            with open(args.config) as stream:
+                config = yaml.safe_load(stream)
+        del payload
     else:
-        raise FileNotFoundError(f"Normalizer stats file not found at {dataset_dir}. Please preprocess the dataset first.")
-
-    test_dataset = load_test_dataset(dataset_dir,dataset_padded_length,dataset_num_class)
-    test_dataset.transform = normalizer.transform_atiss
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, collate_fn=ThreeDFrontDatasetRdm.collate_fn_parallel_transformer)
-
-    feat_extractor = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1).to(device)
-    feat_extractor.fc = nn.Identity()  # 去掉最后的分类层
-    
-    atiss = AutoregressiveTransformer(
-        input_dims=test_dataset.feature_size,
-        hidden2output= hidden2output_layer(config, test_dataset.num_cate+2),
-        feature_extractor=feat_extractor,
-        config=config['network']
-    ).to(device)
-    atiss.eval()
-
-    atiss.load_state_dict(torch.load(f"{save_path}", map_location=device))
+        with open(args.config) as stream:
+            config = yaml.safe_load(stream)
+        mode = config.get('conditioning', 'roomshape')
+        folder = config.get('save', {}).get('save_folder', './pretrained/atiss')
+        tag = 'atiss_' + config['dataset'].get('filter_fn', 'all')
+        output = Path(config.get('training', {}).get('output') or Path(folder) / (tag + '_' + mode))
+        checkpoint_path = output / (args.tag + '.pt')
+        if not checkpoint_path.exists():
+            if not config['dataset'].get('use_objlat', False):
+                tag += '_wo_lat'
+            checkpoint_path = Path(folder) / tag / ('atiss_' + args.tag + '.pth')
+    if checkpoint_path.suffix == '.pt':
+        torch.set_num_threads(int(config.get('training', {}).get('cpu_threads', 4)))
+        atiss, normalizer, config = load_for_inference(checkpoint_path, device)
+    else:
+        dataset_num_class = int(config['dataset'].get('num_class', 31))
+        normalizer = SceneTokenNormalizer.from_config(config, category_dim=dataset_num_class + 2,
+                                                       use_objlat=False, atiss=True)
+        normalizer.load(dataset_root(config) / 'normalizer_stats_atiss.json')
+        atiss = build_model(config, pretrained=False).to(device)
+        atiss.load_state_dict(load_checkpoint(checkpoint_path))
+        atiss.eval()
+    torch.manual_seed(args.seed)
+    dataset_config = config['dataset']
+    dataset_num_class = int(dataset_config.get('num_class', 31))
+    mode = config.get('conditioning', 'roomshape')
+    test_dataset = ATISSDataset(dataset_root(config), 'test', num_classes=dataset_num_class,
+                               conditioning=mode, image_size=dataset_config.get('image_size', 256),
+                               seed=args.seed)
+    test_dataset.normalizer = normalizer
+    batch_size = 1  # The unchanged upstream generate_boxes handles one scene.
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True,
+                             collate_fn=ATISSDataset.collate_fn,
+                             generator=torch.Generator().manual_seed(args.seed))
+    save_folder = str(Path(args.output) if args.output else checkpoint_path.parent / 'samples')
+    os.makedirs(save_folder, exist_ok=True)
+    print(f'Checkpoint: {checkpoint_path}; conditioning: {mode}')
 
     total_time = 0.0
     total_scenes = 0
 
     gen_num = args.num
-    test_batch_num = gen_num // batch_size +1
+    test_batch_num = min(gen_num, len(test_dataset))
     with torch.no_grad():
         print("start_test")
         for batch_idx, batch in enumerate(test_loader):
-            if batch_idx>test_batch_num:
+            if batch_idx >= test_batch_num:
                 break
             room_name = batch['room_name']
             room_shape = batch['room_layout'].to(device)
             obj_tokens = batch['obj_tokens'].to(device)
             attention_mask = batch['attention_mask'].to(device)
-            text_desc = batch['text_desc']
 
-            text_input = None
-
-            torch.cuda.synchronize()
+            if device.type == 'cuda':
+                torch.cuda.synchronize(device)
             start_time = time.time()
 
             infer_room = atiss.generate_boxes(
                 room_mask=room_shape,
                 device=device
             )
-            torch.cuda.synchronize()
+            if device.type == 'cuda':
+                torch.cuda.synchronize(device)
             end_time = time.time()
 
             batch_time = end_time - start_time
@@ -128,10 +114,12 @@ def main():
 
             B, N, _ = infer_room['class_labels'].shape
 
-            class_label = infer_room['class_labels'][:,1:N-1 , :] #掐头去尾
-            translation = infer_room['translations'][:, 1:N-1, :]
-            sizes = infer_room['sizes'][:, 1:N-1, :]
-            angles = infer_room['angles'][:, 1:N-1,:]
+            # Drop reserved symbols, preserving the last object if max_boxes was reached.
+            valid = infer_room['class_labels'][0, :, -2:].sum(-1) == 0
+            class_label = infer_room['class_labels'][:, valid, :]
+            translation = infer_room['translations'][:, valid, :]
+            sizes = infer_room['sizes'][:, valid, :]
+            angles = infer_room['angles'][:, valid, :]
 
             infer_room_mat = torch.cat([class_label, translation, sizes, angles], dim = -1)
 
@@ -142,6 +130,17 @@ def main():
 
             denormalized_infer = normalizer.invert_transform_atiss(infer_room_mat)
             denormalized_obj_tokens = normalizer.invert_transform_atiss(obj_tokens)
+
+            if args.layout_only:
+                import numpy as np
+                layout_dir = Path(save_folder) / 'layouts' / args.tag
+                layout_dir.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(layout_dir / (room_name[0] + '_infer.npz'),
+                                    obj_tokens=denormalized_infer[0].cpu().numpy(),
+                                    class_token_count=dataset_num_class + 2,
+                                    geometry_convention='obb_center_full_size',
+                                    conditioning=mode, checkpoint=str(checkpoint_path))
+                continue
 
             class_part_infer = denormalized_infer[..., :dataset_num_class]
             class_part_obj = denormalized_obj_tokens[..., :dataset_num_class]
@@ -164,8 +163,8 @@ def main():
             attention_mask = attention_mask[:,:-1]
 
 
-            decoded_infer = decode_obj_tokens_with_mask(denormalized_infer_new, infer_attention_mask, use_objlat=dataset_config['use_objlat'], num_classes=dataset_num_class)
-            decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_new, attention_mask, use_objlat=dataset_config['use_objlat'],  num_classes=dataset_num_class)
+            decoded_infer = decode_obj_tokens_with_mask(denormalized_infer_new, infer_attention_mask, use_objlat=False, num_classes=dataset_num_class)
+            decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_new, attention_mask, use_objlat=False,  num_classes=dataset_num_class)
 
             test_scene_jsons = pack_scene_json(decoded_infer,room_name)
             for i, scene_json in enumerate(test_scene_jsons):
@@ -177,7 +176,8 @@ def main():
             # 这里调用可视化函数，可以传入输入和输出
             visualize_result(decoded_infer, raw_data=decoded_raw, room_name=room_name, save_dir=f'{save_folder}/topdown_infer/{args.tag}')
 
-            torch.cuda.synchronize()
+            if device.type == 'cuda':
+                torch.cuda.synchronize(device)
             end_post_processing = time.time()
             post_processing_time = end_post_processing - end_time
             

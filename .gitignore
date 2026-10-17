@@ -4,6 +4,7 @@ __pycache__
 datasets/models
 datasets/figures
 datasets/atiss*
+!datasets/atiss.py
 visualizations
 *.npy
 datasets/processed_wo_lat
@@ -17,3 +18,10 @@ real_scene/
 datasets/diffuscene_process*
 cuda_op/
 3d_front_processed/
+Levels2021
+node_modules/
+.runtime/
+sampling/logs/
+networks/diffuscene/runs/
+networks/diffuscene/slurm/
+*.slurm

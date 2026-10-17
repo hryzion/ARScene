@@ -80,6 +80,11 @@ if __name__ == "__main__":
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
 
+    if 'max_steps' in config.get('training', {}):
+        from networks.diffuscene.step_training import train
+        train(config, device_name=f'cuda:{args.cuda}')
+        raise SystemExit(0)
+
     # --------------------- super_parameters -----------------------
     super_parameters = config['super_parameters']
     BATCH_SIZE = int(super_parameters.get('batch_size', 64))
@@ -126,7 +131,7 @@ if __name__ == "__main__":
     val_dataset = ThreeDFrontDatasetDiffuScene(npz_dir=dataset_dir,split='test',padded_length=dataset_padded_length,num_cate=len(THREED_FRONT_CATEGORY))
 
     # Normalizer
-    normalizer = SceneTokenNormalizer(category_dim=dataset_num_class+2, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True), atiss=True)
+    normalizer = SceneTokenNormalizer.from_config(config, category_dim=dataset_num_class+2, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True), atiss=True)
     if os.path.exists(f'{dataset_dir}/normalizer_stats_atiss.json'):
         normalizer.load(f'{dataset_dir}/normalizer_stats_atiss.json')
     else:
@@ -172,4 +177,3 @@ if __name__ == "__main__":
         use_wandb = args.wandb,
         tag=tag
     )
-

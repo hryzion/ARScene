@@ -1,50 +1,53 @@
+# Network settings are unchanged. Augmentation runs on metric rows before normalization.
+# conditioning: roomshape | unconditional (also --conditioning on the CLI).
+# max_steps is a TOTAL update budget; null keeps 4000 full dataset passes.
+# lr_step is measured in optimizer steps; null preserves the constant learning rate.
+# Resume is automatic when the selected output directory contains last.pt.
 dataset:
-  use_objlat: False
+  root: ./datasets/atiss_bedroom_wo_lat
   filter_fn: bedroom
-  dataset_dir: ./datasets/atiss_bedroom
-  attr_dim: 43
-  padded_length: 27
+  use_objlat: false
   num_class: 31
-
-super_parameters:
-  epochs: 4000
-  batch_size: 128
-  learning_rate: 0.0001
-  weight_decay: 0.00001
-  cuda: 0
-
-save:
-  save_folder: ./pretrained/atiss/
-
-
-network: 
+  image_size: 256
+  augmentations:
+  - fixed_rotations
+  - permutation
+conditioning: roomshape
+network:
   type: atiss
   n_layers: 4
   n_heads: 8
   query_dimensions: 64
   value_dimensions: 64
   feed_forward_dimensions: 1024
-  hidden2output_layer: "autoregressive_mlc"
+  hidden2output_layer: autoregressive_mlc
   hidden_dims: 512
   with_extra_fc: false
-  bbox_output: "autoregressive_mlc"
+  bbox_output: autoregressive_mlc
   n_mixtures: 10
   use_room_mask_as_features: true
-
 training:
-    splits: ["train", "val"]
-    epochs: 10000
-    steps_per_epoch: 500
-    batch_size: 128
-    save_frequency: 50
-    optimizer: Adam
-    lr: 0.0001
-    weight_decay: 0.0
-
-loss:
-  beta: 0.25
-
-
+  epochs: 4000
+  max_steps: null
+  splits:
+  - train
+  batch_size: 128
+  optimizer: Adam
+  lr: 0.0001
+  weight_decay: 0.0
+  seed: 42
+  num_workers: 0
+  cpu_threads: 4
+  lr_step: null
+  lr_decay: 0.5
+  max_grad_norm: null
+  log_every: 20
+  save_every: 1000
+  validate_every: 1000
+validation:
+  splits:
+  - val
+save:
+  save_folder: ./pretrained/atiss
 logger:
-    type: "wandb"
-    project: "autoregressive_transformer"
+  project: autoregressive_transformer

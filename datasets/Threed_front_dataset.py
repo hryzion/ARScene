@@ -8,6 +8,13 @@ from PIL import Image
 import torchvision.transforms.functional as TF
 import random
 import math
+import hashlib
+from datasets.layout_augmentation import (
+    augmentation_generator, rotate_layout, rotate_room_mask, rotate_xz,
+)
+from datasets.midiffusion_floorplan import (
+    clockwise_polygon, scene_sample_fpbp, scale_fpbpn, validate_bounds_fpbpn,
+)
 
 
 def _polygon_points_array(room_shape_polygon):
@@ -49,51 +56,10 @@ def _polygon_points_array(room_shape_polygon):
     return points
 
 
-def sample_floor_plan_boundary_points_normals(room_shape_polygon, n_points=256):
-    points = _polygon_points_array(room_shape_polygon)
-    points = points[np.isfinite(points).all(axis=1)]
-    if points.shape[0] < 3:
-        raise ValueError("Room polygon has fewer than 3 valid points")
-    if np.linalg.norm(points[0] - points[-1]) < 1e-6:
-        points = points[:-1]
-
-    center = points.mean(axis=0, keepdims=True)
-    scale = np.abs(points - center).max()
-    if scale < 1e-6:
-        scale = 1.0
-    norm_points = (points - center) / scale
-
-    next_points = np.roll(norm_points, -1, axis=0)
-    segments = next_points - norm_points
-    lengths = np.linalg.norm(segments, axis=1)
-    valid = lengths > 1e-6
-    norm_points = norm_points[valid]
-    next_points = next_points[valid]
-    segments = segments[valid]
-    lengths = lengths[valid]
-    if len(lengths) == 0:
-        raise ValueError("Room polygon has no valid edges")
-
-    signed_area = 0.5 * np.sum(
-        norm_points[:, 0] * next_points[:, 1]
-        - next_points[:, 0] * norm_points[:, 1]
-    )
-    if signed_area >= 0:
-        normals = np.stack([segments[:, 1], -segments[:, 0]], axis=1)
-    else:
-        normals = np.stack([-segments[:, 1], segments[:, 0]], axis=1)
-    normals = normals / np.maximum(lengths[:, None], 1e-6)
-
-    cumulative = np.concatenate([[0.0], np.cumsum(lengths)])
-    perimeter = cumulative[-1]
-    distances = np.linspace(0.0, perimeter, n_points, endpoint=False)
-    edge_indices = np.searchsorted(cumulative[1:], distances, side="right")
-    edge_offsets = distances - cumulative[edge_indices]
-    ratios = edge_offsets[:, None] / lengths[edge_indices, None]
-    sampled_points = norm_points[edge_indices] + ratios * segments[edge_indices]
-    sampled_normals = normals[edge_indices]
-
-    fpbpn = np.concatenate([sampled_points, sampled_normals], axis=1)
+def sample_floor_plan_boundary_points_normals(room_shape_polygon, n_points=256, *, rng=None):
+    """Official MiDiffusion perimeter sampling, before augmentation/normalization."""
+    points = clockwise_polygon(_polygon_points_array(room_shape_polygon))
+    fpbpn = scene_sample_fpbp(points, n_points, rng=rng)
     return torch.from_numpy(fpbpn.astype(np.float32))
 
 def small_object_dropout(obj_tokens, num_classes,
@@ -491,6 +457,9 @@ class ThreeDFrontDatasetDiffuScene(ThreeDFrontDataset):
 
     
 
+    def _augment_layout(self, idx, room_shape, obj_tokens, room_shape_polygon):
+        return room_shape, obj_tokens, room_shape_polygon
+
     def __getitem__(self, idx):
         data = self.data_list[idx]
 
@@ -506,6 +475,10 @@ class ThreeDFrontDatasetDiffuScene(ThreeDFrontDataset):
         room_shape = self.img_list[idx]
         obj_tokens = data["obj_tokens"].astype(np.float32)    # shape: (M, T)
 
+        room_shape, obj_tokens, room_shape_polygon = self._augment_layout(
+            idx, room_shape, torch.from_numpy(obj_tokens), room_shape_polygon
+        )
+
         # 转换为张量
         if isinstance(room_type, str):
             # 如果 room_type 是字符串，可以用字典转换为 int 编码
@@ -517,7 +490,6 @@ class ThreeDFrontDatasetDiffuScene(ThreeDFrontDataset):
             transforms.Normalize(mean=[0.5], std=[0.5])  # 如果是灰度图
         ])
         room_shape = transform(room_shape)
-        obj_tokens = torch.from_numpy(obj_tokens)
         if self.transform:
             obj_tokens = self.transform(obj_tokens)
 
@@ -597,6 +569,7 @@ class ThreeDFrontDatasetDiffuScene(ThreeDFrontDataset):
         translations = torch.stack(translations, dim=0)  # [B, max_num_objects, 3]
         sizes = torch.stack(sizes, dim=0)  # [B, max_num_objects, 3]
         angles = torch.stack(angles, dim=0)  # [B, max_num_objects, 1]
+        # DiffuScene-family normalizers leave yaw in radians; never min/max-scale it.
         cos_angles = torch.cos(angles)
         sin_angles = torch.sin(angles)
         angles = torch.cat([cos_angles, sin_angles], dim=-1)  # [B, max_num_objects, 2]
@@ -629,16 +602,79 @@ class ThreeDFrontDatasetMiDiffusion(ThreeDFrontDatasetDiffuScene):
         padded_length=None,
         num_cate=31,
         n_fpbpn=256,
+        augmentations=(),
+        seed=42,
+        bounds_fpbpn=None,
     ):
         super().__init__(npz_dir, transform, split, padded_length, num_cate)
         self.n_fpbpn = n_fpbpn
+        self.seed, self.epoch = int(seed), 0
+        self.bounds_fpbpn = (None if bounds_fpbpn is None
+                             else validate_bounds_fpbpn(bounds_fpbpn))
+        self._boundary_cache = {}
+        self.augmentations = frozenset()
+        self.set_augmentations(augmentations)
+        # Stable scene indices make seed/epoch/index augmentation reproducible.
+        order = sorted(range(len(self.file_list)), key=self.file_list.__getitem__)
+        for name in ('file_list', 'data_list', 'img_list', 'shape_list'):
+            values = getattr(self, name)
+            setattr(self, name, [values[i] for i in order])
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    def set_boundary_preprocessing(self, bounds_fpbpn, seed=None):
+        self.bounds_fpbpn = validate_bounds_fpbpn(bounds_fpbpn).copy()
+        if seed is not None and self.seed != int(seed):
+            self.seed = int(seed)
+            self._boundary_cache.clear()
+
+    def metric_boundary(self, idx):
+        # Upstream caches one random draw per room in boxes.npz. Reconstruct the
+        # same fixed draw from scene ID + saved seed without rewriting this data.
+        if idx not in self._boundary_cache:
+            key = f'{self.seed}:{self.file_list[idx]}'
+            seed = int.from_bytes(hashlib.blake2b(key.encode(), digest_size=4).digest(), 'little')
+            self._boundary_cache[idx] = sample_floor_plan_boundary_points_normals(
+                self.shape_list[idx]['room_shape'], self.n_fpbpn,
+                rng=np.random.RandomState(seed),
+            ).numpy()
+        return self._boundary_cache[idx].copy()
+
+    def _augmentation_state(self, idx):
+        generator = augmentation_generator(self.seed, self.epoch, idx)
+        turns = int(torch.randint(4, (), generator=generator)) if 'fixed_rotations' in self.augmentations else 0
+        return generator, turns
+
+    def set_augmentations(self, augmentations):
+        if not isinstance(augmentations, (list, tuple, set, frozenset)):
+            raise ValueError('augmentations must be a sequence')
+        if set(augmentations) - {'fixed_rotations', 'permutation'}:
+            raise ValueError(f'Unsupported MiDiffusion augmentations: {augmentations}')
+        self.augmentations = frozenset(augmentations)
+
+    def _augment_layout(self, idx, room_shape, obj_tokens, room_shape_polygon):
+        polygon = _polygon_points_array(room_shape_polygon).copy()
+        if self.augmentations:
+            generator, turns = self._augmentation_state(idx)
+            obj_tokens = rotate_layout(obj_tokens, self.num_cate + 2, turns)
+            polygon = rotate_xz(polygon, turns)
+            if turns:
+                room_shape = Image.fromarray(rotate_room_mask(np.asarray(room_shape), turns))
+            if 'permutation' in self.augmentations:
+                obj_tokens = obj_tokens[torch.randperm(len(obj_tokens), generator=generator)]
+        return room_shape, obj_tokens, polygon
 
     def __getitem__(self, idx):
+        if self.bounds_fpbpn is None:
+            raise RuntimeError('Initialize MiDiffusion preprocessing before reading samples')
         sample = super().__getitem__(idx)
-        sample['fpbpn'] = sample_floor_plan_boundary_points_normals(
-            sample['room_shape_poly'],
-            n_points=self.n_fpbpn,
-        )
+        fpbpn = self.metric_boundary(idx)
+        _, turns = self._augmentation_state(idx)
+        fpbpn[:, :2] = rotate_xz(fpbpn[:, :2], turns)
+        fpbpn[:, 2:] = rotate_xz(fpbpn[:, 2:], turns)
+        # Rotate in metres, THEN apply upstream per-axis bounds (not vice versa).
+        sample['fpbpn'] = torch.from_numpy(scale_fpbpn(fpbpn, self.bounds_fpbpn))
         return sample
 
     @staticmethod
@@ -775,6 +811,7 @@ class ThreeDFrontDatasetPhyScene(ThreeDFrontDataset):
         translations = torch.stack(translations, dim=0)  # [B, max_num_objects, 3]
         sizes = torch.stack(sizes, dim=0)  # [B, max_num_objects, 3]
         angles = torch.stack(angles, dim=0)  # [B, max_num_objects, 1]
+        # PhyScene follows the same raw-radian sin/cos convention as DiffuScene.
         cos_angles = torch.cos(angles)
         sin_angles = torch.sin(angles)
         angles = torch.cat([cos_angles, sin_angles], dim=-1)  # [B, max_num_objects, 2]

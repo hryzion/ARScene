@@ -1,0 +1,52 @@
+# ATISS livingroom: 12 layers, 8 heads x 96, hidden 768, FFN 1536.
+# Keep full checkpoints every 100k steps; total budget 900k.
+dataset:
+  root: ./datasets/atiss_livingroom_obb_v2_wo_lat
+  filter_fn: livingroom
+  use_objlat: false
+  num_class: 31
+  image_size: 256
+  augmentations:
+  - fixed_rotations
+  - permutation
+conditioning: unconditional
+network:
+  type: atiss
+  n_layers: 12
+  n_heads: 8
+  query_dimensions: 96
+  value_dimensions: 96
+  feed_forward_dimensions: 1536
+  hidden2output_layer: autoregressive_mlc
+  hidden_dims: 768
+  with_extra_fc: false
+  bbox_output: autoregressive_mlc
+  n_mixtures: 10
+  use_room_mask_as_features: true
+training:
+  epochs: 4000
+  max_steps: 900000
+  splits:
+  - train
+  batch_size: 128
+  optimizer: Adam
+  lr: 0.0001
+  weight_decay: 0.0
+  seed: 42
+  num_workers: 0
+  cpu_threads: 4
+  lr_step: null
+  lr_decay: 0.5
+  max_grad_norm: null
+  log_every: 20
+  save_every: 1000
+  validate_every: 1000
+  output: pretrained/atiss/livingroom_unconditional_12x768_900k
+  keep_every: 100000
+validation:
+  splits:
+  - val
+save:
+  save_folder: ./pretrained/atiss
+logger:
+  project: autoregressive_transformer

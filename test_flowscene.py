@@ -52,7 +52,7 @@ def main():
     batch_size = 16
 
     obj_feat = 64 if dataset_config.get("use_objlat") else 0
-    normalizer = SceneTokenNormalizer(
+    normalizer = SceneTokenNormalizer.from_config(config,
         category_dim=dataset_num_class + 2,
         obj_feat=obj_feat,
         rotation_mode="sincos",
@@ -182,4 +182,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

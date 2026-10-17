@@ -1,5 +1,3 @@
-from curses import noecho
-from doctest import debug_script
 import torch
 import torch.nn as nn
 from torch.nn import Module
@@ -8,7 +6,6 @@ from torch.nn.utils import clip_grad_norm_
 from .diffusion_ddpm import DiffusionPoint
 from .denoise_net import Unet1D
 from ..stats_logger import StatsLogger
-from transformers import BertTokenizer, BertModel
 # import clip
 
 class DiffusionSceneLayout_DDPM(Module):
@@ -44,6 +41,7 @@ class DiffusionSceneLayout_DDPM(Module):
                     p.requires_grad = False
                 print('use text as condition, and pretrained clip embedding')
             else:
+                from transformers import BertTokenizer, BertModel
                 self.tokenizer = BertTokenizer.from_pretrained('bert-base-cased')
                 self.bertmodel = BertModel.from_pretrained("bert-base-cased")
 
@@ -226,10 +224,14 @@ class DiffusionSceneLayout_DDPM(Module):
 
         return loss, loss_dict
 
-    def sample(self, room_mask, num_points, point_dim, batch_size=1, text=None, 
+    def sample(self, room_mask=None, num_points=None, point_dim=None, batch_size=1, text=None,
                partial_boxes=None, input_boxes=None, ret_traj=False, ddim=False, clip_denoised=False, freq=40, batch_seeds=None, 
                 ):
-        device = room_mask.device
+        if room_mask is None and self.room_mask_condition:
+            raise ValueError('room_mask is required by this conditional checkpoint')
+        device = next(self.parameters()).device if room_mask is None else room_mask.device
+        num_points = self.sample_num_points if num_points is None else num_points
+        point_dim = self.config['point_dim'] if point_dim is None else point_dim
         noise = torch.randn((batch_size, num_points, point_dim))#, device=room_mask.device)
 
         # get the latent feature of room_mask
@@ -242,10 +244,10 @@ class DiffusionSceneLayout_DDPM(Module):
         # process instance & class condition f
         if self.instance_condition:
             if self.learnable_embedding:
-                instance_indices = torch.arange(self.sample_num_points).long().to(device)[None, :].repeat(room_mask.size(0), 1)
+                instance_indices = torch.arange(self.sample_num_points).long().to(device)[None, :].repeat(batch_size, 1)
                 instan_condition_f = self.positional_embedding[instance_indices, :]
             else:
-                instance_label = torch.eye(self.sample_num_points).float().to(device)[None, ...].repeat(room_mask.size(0), 1, 1)
+                instance_label = torch.eye(self.sample_num_points).float().to(device)[None, ...].repeat(batch_size, 1, 1)
                 instan_condition_f = self.fc_instance_condition(instance_label) 
         else:
             instan_condition_f = None
@@ -294,19 +296,19 @@ class DiffusionSceneLayout_DDPM(Module):
 
         if input_boxes is not None:
             print('scene arrangement sampling')
-            samples = self.diffusion.arrange_samples(noise.shape, room_mask.device, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised, input_boxes=input_boxes)
+            samples = self.diffusion.arrange_samples(noise.shape, device, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised, input_boxes=input_boxes)
 
         elif partial_boxes is not None:
             print('scene completion sampling')
-            samples = self.diffusion.complete_samples(noise.shape, room_mask.device, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised, partial_boxes=partial_boxes)
+            samples = self.diffusion.complete_samples(noise.shape, device, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised, partial_boxes=partial_boxes)
 
         else:
             print('unconditional / conditional generation sampling')
             # reverse sampling
             if ret_traj:
-                samples = self.diffusion.gen_sample_traj(noise.shape, room_mask.device, freq=freq, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised)
+                samples = self.diffusion.gen_sample_traj(noise.shape, device, freq=freq, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised)
             else:
-                samples = self.diffusion.gen_samples(noise.shape, room_mask.device, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised)
+                samples = self.diffusion.gen_samples(noise.shape, device, condition=condition, condition_cross=condition_cross, clip_denoised=clip_denoised)
             
         return samples
 

@@ -1,0 +1,12 @@
+Edit the supplied RelTree method figure. Preserve its panel layout, colors, English labels, all symbolic model hyperparameters, token table, exact attention matrix, diagrams, and overall composition. This is a narrowly targeted scientific correction of panel (d), not a redesign.
+
+In panel (d), the orange "Relative encoding (child from parent)" formula box currently incorrectly renders the division symbols as multiplication. Replace ONLY the first and third formulas there with unambiguous coordinate-wise fractions, using REAL HORIZONTAL FRACTION BARS (not a circled glyph):
+r_j = [R_y(−θ_p)(p_c − p_p)]_j / s_{p,j}
+ℓ_j = log(s_{c,j} / s_{p,j})
+Render numerator above denominator, mathematical fraction layout. Retain the middle line Δθ = wrap(θ_c − θ_p).
+Add the tiny clear note "j ∈ {x, y, z}" inside the orange box if space permits. All indexing must be correct: c=child, p=parent, j=coordinate.
+The blue decoding box is already correct; retain its multiplicative geometry:
+p_c = p_p + R_y(θ_p)(r ⊙ s_p)
+s_c = s_p ⊙ exp(ℓ)
+θ_c = wrap(θ_p + Δθ)
+Do not replace division with multiplication in the orange box. Make the formulas sharp and readable. Keep everything else as close to the original as possible. All architecture hyperparameters must remain SYMBOLS: L,D,H,L_a,D_a,H_a,M,K_R,K_r,K_θ,K_ℓ,C,p_drop, not numeric experiment settings. Output the entire figure, uncropped, high resolution, preferably 3840×2160.

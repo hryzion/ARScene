@@ -110,19 +110,34 @@ def denormalize_tokens(obj_tokens, stats):
 
 
 
-def get_room_attributes(room,use_objlat=True,atiss=False):
+def get_room_attributes(room,use_objlat=True,atiss=False, *, asset_boxes=None, bbox_tolerance=.03,
+                        room_height=3., floor_y=0.):
+    from copy import deepcopy
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
+    room = deepcopy(room)
+    raw_boundary = np.asarray(room['roomShape'], dtype=float)
+    source_center = (raw_boundary.min(0) + raw_boundary.max(0)) / 2
     centralize_room(room)
+    boundary = np.asarray(room['roomShape'], dtype=float)
+    extent = boundary.max(0) - boundary.min(0)
     room_info = {
         'room_type' : room['roomTypes'][0], # one-hot ['livingRoom', "bedroom", 'diningRoom']
         'room_shape' : render_room_shape_image_centered(room),
-        'description' : get_room_description(room)
+        'description' : get_room_description(room),
+        'room_boundary': boundary,
+        'room_position': np.array([0., floor_y + room_height / 2, 0.]),
+        'room_size': np.array([extent[0], room_height, extent[1]]),
+        'room_origin_offset': np.array([source_center[0], 0., source_center[1]]),
+        'geometry_diagnostics': [],
+        'asset_ids': [],
     }
     obj_tokens = []
     for obj in room['objList']:
-        obj_token = embed_obj_token(obj,use_objlat=use_objlat,atiss=atiss)
+        obj_token = embed_obj_token(obj,use_objlat=use_objlat,atiss=atiss, asset_boxes=asset_boxes,
+                                    bbox_tolerance=bbox_tolerance, diagnostics=room_info['geometry_diagnostics'])
         if obj_token is not None:
             obj_tokens.append(obj_token)
+            room_info['asset_ids'].append(str(obj['modelId']))
     obj_tokens = np.array(obj_tokens, dtype=np.float32)
     return room_info, obj_tokens
 
@@ -439,7 +454,8 @@ def get_room_description(centred_room):
     
 
 
-def embed_obj_token(obj, use_objlat=True,atiss=False):
+def embed_obj_token(obj, use_objlat=True,atiss=False, *, asset_boxes=None, bbox_tolerance=.03, diagnostics=None):
+    from preprocess_script.geometry import AssetBoxResolver, world_obb
     global THREED_FRONT_FURNITURE, THREED_FRONT_CATEGORY
     if 'coarseSemantic' not in obj or obj["coarseSemantic"] == 'Window' or obj['coarseSemantic'] == 'Door':
         return None
@@ -463,13 +479,14 @@ def embed_obj_token(obj, use_objlat=True,atiss=False):
     
     cs[cid] = 1.0
 
-    bbox_max = np.array(obj['bbox']['max'])
-    bbox_min = np.array(obj['bbox']['min'])
-    translate = np.array(obj['translate'])
-    rotation = np.array([obj['orient']])
- 
-    scale = np.array(obj['scale'])
-    size = abs(bbox_max-bbox_min)
+    if asset_boxes is None:
+        # Missing asset centers may be recovered for aligned instances only.
+        # Oblique assets require the train-calibrated resolver from preprocess.py.
+        asset_boxes = AssetBoxResolver(MODEL_LATENTS, bbox_tolerance=bbox_tolerance)
+    translate, size, yaw, entry = world_obb(obj, asset_boxes, bbox_tolerance)
+    rotation = np.array([yaw])
+    if diagnostics is not None:
+        diagnostics.append(entry)
     
     
     if atiss:
@@ -858,6 +875,8 @@ def divide_scene_json_to_rooms(scene_json):
     return rooms
 
 THREED_FRONT_FURNITURE = {'Barstool': 'stool', 'Bookcase / jewelry Armoire': 'bookshelf', 'Bunk Bed': 'bunk_bed', 'Ceiling Lamp': 'ceiling_lamp', 'Chaise Longue Sofa': 'chaise_longue_sofa', 'Children Cabinet': 'cabinet', 'Classic Chinese Chair': 'chinese_chair', 'Coffee Table': 'coffee_table', 'Corner/Side Table': 'corner_side_table', 'Desk': 'desk', 'Dining Chair': 'dining_chair', 'Dining Table': 'dining_table', 'Drawer Chest / Corner cabinet': 'cabinet', 'Dressing Chair': 'dressing_chair', 'Dressing Table': 'dressing_table', 'Footstool / Sofastool / Bed End Stool / Stool': 'stool', 'Kids Bed': 'kids_bed', 'King-size Bed': 'double_bed', 'L-shaped Sofa': 'l_shaped_sofa', 'Lazy Sofa': 'lazy_sofa', 'Lounge Chair / Cafe Chair / Office Chair': 'lounge_chair', 'Loveseat Sofa': 'loveseat_sofa', 'Nightstand': 'nightstand', 'Pendant Lamp': 'pendant_lamp', 'Round End Table': 'round_end_table', 'Shelf': 'shelf', 'Sideboard / Side Cabinet / Console table': 'console_table', 'Single bed': 'single_bed', 'TV Stand': 'multi_seat_sofa', 'Three-seat / Multi-seat Sofa': 'tv_stand', 'Wardrobe': 'wardrobe', 'Wine Cabinet': 'wine_cabinet', 'Armchair': 'armchair', 'armchair': 'armchair', 'Bed Frame' : 'single_bed'}
+# Correct the historical TV-stand / multi-seat-sofa label swap.
+THREED_FRONT_FURNITURE.update({'TV Stand': 'tv_stand', 'Three-seat / Multi-seat Sofa': 'multi_seat_sofa'})
 THREED_FRONT_CATEGORY = ['dressing_table', 'console_table', 'round_end_table', 'chaise_longue_sofa', 'kids_bed', 'dressing_chair', 'tv_stand', 'bookshelf', 'lazy_sofa', 'dining_table', 'wardrobe', 'corner_side_table', 'armchair', 'chinese_chair', 'cabinet', 'nightstand', 'multi_seat_sofa', 'loveseat_sofa', 'stool', 'l_shaped_sofa', 'double_bed', 'bunk_bed', 'pendant_lamp', 'lounge_chair', 'dining_chair', 'single_bed', 'ceiling_lamp', 'wine_cabinet', 'coffee_table', 'shelf', 'desk']
 THREED_FRONT_COLOR  = [
     (0.121, 0.466, 0.705),

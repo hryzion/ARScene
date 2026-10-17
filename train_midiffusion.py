@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 import os
 
 import torch
@@ -7,10 +8,8 @@ import yaml
 from torch.utils.data import DataLoader
 
 from config import parse_arguments
-from datasets.SceneTokenNormalizer import SceneTokenNormalizer
-from datasets.Threed_front_dataset import (
-    ThreeDFrontDatasetDiffuScene,
-    ThreeDFrontDatasetMiDiffusion,
+from datasets.midiffusion import (
+    get_dataset_class, get_dataset_kwargs, prepare_midiffusion_preprocessing,
 )
 from networks.midiffusion import (
     DiffusionSceneLayout_DDPM,
@@ -23,7 +22,6 @@ from networks.midiffusion import (
 )
 from networks.midiffusion.feature_extractors import get_feature_extractor
 from networks.stats_logger import StatsLogger, WandB
-from utils import THREED_FRONT_CATEGORY, count_trainable_params
 
 
 def move_all_thing_to(sample_param: dict, device):
@@ -91,16 +89,22 @@ def resolve_train_stats_file(config, dataset_dir, save_folder, normalizer):
     stats_path = os.path.join(save_folder, "midiffusion_train_stats.json")
     translate = normalizer.stats["translate"]
     size = normalizer.stats["size"]
-    rotation = normalizer.stats["rotation"]
+    # The sin/cos protocol does not fit or use yaw min/max statistics.
+    # Keep a physical circular range for the auxiliary diffusion stats file.
+    if normalizer.normalize_rotation:
+        rotation = normalizer.stats["rotation"]
+        bounds_angles = [
+            float(rotation["min"].reshape(-1)[0]),
+            float(rotation["max"].reshape(-1)[0]),
+        ]
+    else:
+        bounds_angles = [-math.pi, math.pi]
     stats = {
         "bounds_translations": (
             translate["min"].tolist() + translate["max"].tolist()
         ),
         "bounds_sizes": size["min"].tolist() + size["max"].tolist(),
-        "bounds_angles": [
-            float(rotation["min"].reshape(-1)[0]),
-            float(rotation["max"].reshape(-1)[0]),
-        ],
+        "bounds_angles": bounds_angles,
     }
     with open(stats_path, "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2)
@@ -128,20 +132,6 @@ def build_midiffusion_model(config, dataset_num_class, train_stats_file, device)
         raise ValueError(f"Unsupported midiffusion model type: {model_config['type']}")
 
     return model.to(device)
-
-
-def get_dataset_class(config):
-    if config.get("feature_extractor", {}).get("name") == "pointnet_simple":
-        return ThreeDFrontDatasetMiDiffusion
-    return ThreeDFrontDatasetDiffuScene
-
-
-def get_dataset_kwargs(config):
-    if config.get("feature_extractor", {}).get("name") == "pointnet_simple":
-        return {
-            "n_fpbpn": config.get("feature_extractor", {}).get("nfpbpn", 256),
-        }
-    return {}
 
 
 def train_model(
@@ -174,6 +164,7 @@ def train_model(
 
     iterations = 0
     for epoch in range(num_epochs):
+        train_loader.dataset.set_epoch(epoch)
         adjust_learning_rate(lr_scheduler, optimizer, iterations)
         model.train()
         for b, sample in enumerate(train_loader):
@@ -205,6 +196,13 @@ if __name__ == "__main__":
     args = parse_arguments()
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
+
+    if 'max_steps' in config.get('training', {}):
+        from networks.midiffusion.step_training import train
+        train(config, device_name=f'cuda:{args.cuda}')
+        raise SystemExit(0)
+
+    from utils import THREED_FRONT_CATEGORY, count_trainable_params
 
     super_parameters = config["super_parameters"]
     batch_size = int(super_parameters.get("batch_size", 64))
@@ -254,23 +252,10 @@ if __name__ == "__main__":
         **dataset_kwargs,
     )
 
-    normalizer = SceneTokenNormalizer(
-        category_dim=dataset_num_class + 2,
-        rotation_mode="sincos",
-        use_objlat=use_objlat,
-        atiss=True,
+    normalizer, preprocessing = prepare_midiffusion_preprocessing(
+        config, train_dataset, val_dataset, save_folder
     )
-    normalizer_path = os.path.join(dataset_dir, "normalizer_stats_atiss.json")
-    if os.path.exists(normalizer_path):
-        normalizer.load(normalizer_path)
-    else:
-        normalizer.fit_atiss(
-            train_dataset, mask_key="attention_mask", batch_size=batch_size
-        )
-        normalizer.save(normalizer_path)
-
-    train_dataset.transform = normalizer.transform_atiss
-    val_dataset.transform = normalizer.transform_atiss
+    print('[ INFO ] MiDiffusion preprocessing:', preprocessing)
 
     train_loader = DataLoader(
         train_dataset,

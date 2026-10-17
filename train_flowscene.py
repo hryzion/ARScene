@@ -129,7 +129,7 @@ if __name__ == "__main__":
         num_cate=len(THREED_FRONT_CATEGORY),
     )
 
-    normalizer = SceneTokenNormalizer(
+    normalizer = SceneTokenNormalizer.from_config(config,
         category_dim=dataset_num_class + 2,
         rotation_mode="sincos",
         use_objlat=dataset_config.get("use_objlat", True),

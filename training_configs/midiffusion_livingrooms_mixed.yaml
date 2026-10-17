@@ -1,7 +1,7 @@
 dataset:
   use_objlat: False
   filter_fn: livingroom
-  dataset_dir: ./datasets/atiss_livingroom
+  dataset_dir: ./datasets/atiss_livingroom_obb_v2
   attr_dim: 43
   padded_length: 27
   num_class: 31
@@ -22,7 +22,7 @@ data:
   encoding_type: cached_diffusion_cosin_angle_wocm
   dataset_directory: livingroom
   annotation_file: livingroom_threed_front_splits.csv
-  augmentations: ["fixed_rotations"]
+  augmentations: ["fixed_rotations", "permutation"]
   train_stats: dataset_stats.txt
   room_layout_size: "64,64"
 
@@ -63,7 +63,7 @@ network:
     model_mean_type: eps
     model_var_type: fixedsmall
     loss_separate: true
-    loss_iou: true
+    loss_iou: false  # Official livingrooms_mixed.yaml uses the false default.
 
   net_type: transformer
   net_kwargs:
@@ -83,6 +83,7 @@ feature_extractor:
   feat_units: [4, 64, 64, 512, 64]
 
 training:
+  seed: 42
   splits: ["train", "val"]
   epochs: 100000
   batch_size: 128

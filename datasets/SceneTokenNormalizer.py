@@ -5,16 +5,47 @@ import math
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 
 class SceneTokenNormalizer:
-    def __init__(self, category_dim, obj_feat = 64, rotation_mode='sincos',use_objlat=True, atiss = False):
+    # Scalar-angle models learn min/max-normalized yaw. DiffuScene-family
+    # collators must receive physical radians before computing [cos(yaw), sin(yaw)].
+    # Their sampled atan2 result is already in radians and must also bypass scaling.
+    MODEL_ROTATION_NORMALIZATION = {
+        'sar': 'minmax', 'vqvae': 'minmax', 'residualautoencoder': 'minmax',
+        'atiss': 'minmax', 'drift': 'minmax',
+        'diffuscene': 'radians', 'flowscene': 'radians', 'physcene': 'radians',
+        'scenefoundry': 'radians',
+        'midiffusion': 'radians', 'midiffusionmixed': 'radians',
+        'diffusionscenelayoutddpm': 'radians', 'diffusionscenelayoutmixed': 'radians',
+        'rcvae': 'radians',  # Its mean/std path keeps the scalar yaw in radians.
+    }
+
+    def __init__(self, category_dim, obj_feat = 64, rotation_mode='sincos',use_objlat=True, atiss = False,
+                 *, model_type=None, rotation_normalization='auto'):
         """
         category_dim: 分类 token 的维度（len(THREED_FRONT_CATEGORY)）
         rotation_mode: 'sincos' 或 'raw'
+        model_type: 模型配置中的 type；决定 *_atiss 的角度数值协议。
+        rotation_normalization: auto 使用模型协议；minmax/radians 用于显式匹配历史模型。
         """
         self.category_dim = category_dim
         self.obj_dim = obj_feat if use_objlat else 0
         self.origin_dim = category_dim + 10 + obj_feat if not atiss else category_dim + 7  # 原始维度
         
         self.rotation_mode = rotation_mode
+        model_key = None if model_type is None else str(model_type).lower().replace('_', '').replace('-', '')
+        model_key = {'interiorgpt': 'sar', 'scenegpt': 'sar'}.get(model_key, model_key)
+        if rotation_normalization not in ('auto', 'minmax', 'radians'):
+            raise ValueError('rotation_normalization must be auto, minmax or radians')
+        self.model_type = model_key
+        self._rotation_from_saved = model_key is None and rotation_normalization == 'auto'
+        if rotation_normalization == 'auto':
+            if model_key is None:
+                rotation_normalization = 'minmax'  # Legacy constructor compatibility.
+            elif model_key not in self.MODEL_ROTATION_NORMALIZATION:
+                raise ValueError(f'No SceneTokenNormalizer rotation profile for {model_type!r}; '
+                                 'RelTree uses its own tokenizer. Specify a profile for a new model.')
+            else:
+                rotation_normalization = self.MODEL_ROTATION_NORMALIZATION[model_key]
+        self.rotation_normalization = rotation_normalization
         
         self.use_objlat = use_objlat
         self.stats = {}
@@ -38,7 +69,30 @@ class SceneTokenNormalizer:
                 'rotation': slice(self.category_dim + 6, self.category_dim + 7),
             }
 
-   
+    @classmethod
+    def from_config(cls, config, **kwargs):
+        """Resolve model identity from the same YAML used to construct the model."""
+        types = {config[key]['type'] for key in ('model', 'network')
+                 if isinstance(config.get(key), dict) and config[key].get('type')}
+        if len(types) != 1:
+            raise ValueError('Expected one model.type or network.type for the normalizer')
+        return cls(**kwargs, model_type=types.pop(),
+                   rotation_normalization=config.get('normalization', {}).get('rotation_normalization', 'auto'))
+
+    @property
+    def normalize_rotation(self):
+        return self.rotation_normalization == 'minmax'
+
+    def _atiss_fields(self):
+        for key, section in self.slices.items():
+            if key == 'latent' or (key == 'rotation' and not self.normalize_rotation):
+                continue
+            yield key, section
+
+    def _metadata(self):
+        return {'version': 1, 'model_type': self.model_type, 'category_dim': self.category_dim,
+                'rotation_normalization': self.rotation_normalization}
+
 
     def fit(self, dataset, mask_key='attention_mask', batch_size=8):
         """统计训练集的 mean/std，排除 padding"""
@@ -140,18 +194,31 @@ class SceneTokenNormalizer:
 
     def save(self, path):
         serializable = {k: {item_name: v[item_name].tolist() for item_name in v.keys()} for k, v in self.stats.items()}
+        serializable['__normalizer__'] = self._metadata()
         with open(path, 'w') as f:
             json.dump(serializable, f)
 
     def load(self, path):
         with open(path, 'r') as f:
             data = json.load(f)
+        metadata = data.pop('__normalizer__', None)
+        if metadata is not None:
+            if metadata.get('version') != 1 or metadata.get('category_dim') != self.category_dim:
+                raise ValueError('Normalizer metadata version or category dimensions differ')
+            saved_rotation = metadata.get('rotation_normalization')
+            if saved_rotation not in ('minmax', 'radians'):
+                raise ValueError('Invalid saved rotation normalization')
+            if not self._rotation_from_saved and saved_rotation != self.rotation_normalization:
+                raise ValueError('Saved rotation normalization differs from the model configuration; '
+                                 'use the original training protocol or fit stats in a new data directory')
+            # Data-only export tools have no model configuration: use the saved protocol.
+            if self._rotation_from_saved:
+                self.rotation_normalization = saved_rotation
         self.stats = {k: {item_name: torch.tensor(v[item_name]) for item_name in v.keys()} for k, v in data.items()}
 
 
     def fit_atiss(self, dataset, mask_key='attention_mask', batch_size=8):
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
-        slices = self.slices
         mins, maxs = {}, {}
         for batch in loader:
             obj_tokens = batch['obj_tokens']      # [B, O, D]
@@ -160,9 +227,7 @@ class SceneTokenNormalizer:
             mask = batch.get(mask_key, torch.ones(B, O, device=obj_tokens.device))
             mask = ~mask                           # padding=True, valid=False
 
-            for key, s in slices.items():
-                if key == 'latent':
-                    continue
+            for key, s in self._atiss_fields():
                 vals = obj_tokens[:, :, s]         # [B, O, C]
                 valid = mask.unsqueeze(-1).expand_as(vals)
                 vals = vals[valid].view(-1, vals.size(-1))  # [N, C]
@@ -193,19 +258,14 @@ class SceneTokenNormalizer:
                 }
 
     def transform_atiss(self, obj_tokens):
-        """标准化 bbox/translate/scale，rotation → sincos"""
+        """Min/max geometry scaling; scalar yaw follows the model's protocol (no sin/cos here)."""
         original_shape = obj_tokens.shape
         if obj_tokens.dim() == 3:
             B, N, D = original_shape
             obj_tokens = obj_tokens.view(-1, D)  # [B*N, D]
 
-        slices =self.slices
         normalized = obj_tokens.clone()
-        for key, s in slices.items():
-            if key == 'latent':
-                continue
-            # if key == 'rotation':
-            #     continue
+        for key, s in self._atiss_fields():
             min_s, max_s = self.stats[key]['min'].to(obj_tokens.device), self.stats[key]['max'].to(obj_tokens.device)
             # print(obj_tokens.shape)
             normalized[:, s] = self.normalize(normalized[:, s], min_s, max_s)
@@ -217,19 +277,14 @@ class SceneTokenNormalizer:
         return normalized
     
     def invert_transform_atiss(self, obj_tokens):
+        """Invert the same fields as transform_atiss, including yaw when minmax encoded."""
         original_shape = obj_tokens.shape
         if obj_tokens.dim() == 3:
             B, N, D = original_shape
             obj_tokens = obj_tokens.reshape(-1, D)  # [B*N, D]
 
-        # print(obj_tokens.shape)
-        slices = self.slices
         denorm = obj_tokens.clone()
-        for key, s in slices.items():
-            if key =='latent':
-                continue
-            # if key == 'rotation': ## if gpt, comment it
-            #     continue
+        for key, s in self._atiss_fields():
             min_s, max_s = self.stats[key]['min'].to(obj_tokens.device), self.stats[key]['max'].to(obj_tokens.device)
             denorm[:, s] = self.denormalize(denorm[:, s], min_s, max_s)
         if len(original_shape) == 3:
@@ -240,13 +295,12 @@ class SceneTokenNormalizer:
     
     def save_atiss(self, path):
         serializable = {k: {'min': v['min'].tolist(), 'max': v['max'].tolist()} for k, v in self.stats.items()}
+        serializable['__normalizer__'] = self._metadata()
         with open(path, 'w') as f:
             json.dump(serializable, f)
 
     def load_atiss(self, path):
-        with open(path, 'r') as f:
-            data = json.load(f)
-        self.stats = {k: {'min': torch.tensor(v['min']), 'max': torch.tensor(v['max'])} for k, v in data.items()}
+        self.load(path)
 
     def combined_transform(self, obj_tokens):
         return self.transform_atiss(self.transform(obj_tokens)[:,:-2])

@@ -1,0 +1,39 @@
+dataset:
+  root: datasets/processed_reltree_bedroom_v2
+model:
+  architecture: node_attribute_ar_v2
+  width: 768
+  layers: 12
+  heads: 12
+  ff_multiplier: 4
+  dropout: 0.1
+  cond_drop: 0.1
+  max_depth: 32
+  boundary_points: 32
+  attribute_layers: 2
+  attribute_width: 256
+  attribute_heads: 4
+  attribute_ff_multiplier: 4
+training:
+  device: cuda:0
+  precision: bf16
+  batch_size: 128
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  grad_clip: 1.0
+  epochs: 1000  # 102 steps/epoch: enough to reach 100,000 total updates.
+  max_steps: 100000
+  checkpoint_every: 100
+  validate_every: 1000
+  log_every: 20
+  initial_evaluation: false
+  seed: 42
+  cpu_threads: 4
+  num_workers: 0
+  sample_count: 4
+  sample_max_depth: 12
+  output: networks/reltree/runs/bedroom_ar_12x768_attr256_cd10
+loss:
+  type_weight: 1.0
+  geometry_weights: [1, 1, 1, 1, 1, 1, 1]
+  class_weight: 1.0

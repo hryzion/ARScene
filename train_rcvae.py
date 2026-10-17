@@ -234,7 +234,7 @@ if __name__ == "__main__":
     val_dataset = ThreeDFrontDataset(npz_dir=dataset_dir,split='test',padded_length=dataset_padded_length)
 
     # Normalizer
-    normalizer = SceneTokenNormalizer(category_dim=31, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
+    normalizer = SceneTokenNormalizer.from_config(config, category_dim=31, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
     if os.path.exists(f'{dataset_dir}/normalizer_stats.json'):
         normalizer.load(f'{dataset_dir}/normalizer_stats.json')
     else:
@@ -272,4 +272,3 @@ if __name__ == "__main__":
         configs = config,
         use_wandb = args.wandb
     )
-

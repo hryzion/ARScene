@@ -36,12 +36,16 @@ class BaseAutoregressiveTransformer(nn.Module):
             nn.Parameter(torch.randn(1, 512))
         )
 
-        # TODO: Add the projection dimensions for the room features in the
-        # config!!!
+        # An explicit room_feature_dim projects the room token separately:
+        # ResNet 512 -> room_feature_dim -> transformer hidden_dims.
+        # Omission preserves the legacy layers and checkpoint state keys.
         self.feature_extractor = feature_extractor
-        self.fc_room_f = nn.Linear(
-            512, 512 # ZHX note: modified
-        )
+        self.room_feature_dim = config.get("room_feature_dim")
+        if self.room_feature_dim is not None and (
+            not isinstance(self.room_feature_dim, int) or self.room_feature_dim <= 0
+        ):
+            raise ValueError("room_feature_dim must be a positive integer")
+        self.fc_room_f = nn.Linear(512, self.room_feature_dim or 512)
 
         # Positional encoding for each property
         self.pe_pos_x = FixedPositionalEncoding(proj_dims=64)
@@ -64,6 +68,8 @@ class BaseAutoregressiveTransformer(nn.Module):
 
         hidden_dims = config.get("hidden_dims", 768)
         self.fc = nn.Linear(512, hidden_dims)
+        if self.room_feature_dim is not None:
+            self.fc_room_token = nn.Linear(self.room_feature_dim, hidden_dims)
         self.hidden2output = hidden2output
 
     def start_symbol(self, device="cpu"):
@@ -91,6 +97,14 @@ class BaseAutoregressiveTransformer(nn.Module):
     def start_symbol_features(self, B, room_mask):
         room_layout_f = self.fc_room_f(self.feature_extractor(room_mask))
         return room_layout_f[:, None, :]
+
+    def project_tokens(self, room_features, other_tokens):
+        """Project room and object/query tokens to the same Transformer width."""
+        if self.room_feature_dim is None:
+            return self.fc(torch.cat([room_features, other_tokens], dim=1))
+        return torch.cat([
+            self.fc_room_token(room_features), self.fc(other_tokens)
+        ], dim=1)
 
     def forward(self, sample_params):
         raise NotImplementedError()
@@ -141,10 +155,9 @@ class AutoregressiveTransformer(BaseAutoregressiveTransformer):
 
         start_symbol_f = self.start_symbol_features(B, room_layout)
         # Concatenate with the mask embedding for the start token
-        X = torch.cat([
-            start_symbol_f, self.empty_token_embedding.expand(B, -1, -1), X
-        ], dim=1)
-        X = self.fc(X)
+        X = self.project_tokens(start_symbol_f, torch.cat([
+            self.empty_token_embedding.expand(B, -1, -1), X
+        ], dim=1))
 
         # Compute the features using causal masking
         # print(sample_params['lengths'])
@@ -165,9 +178,7 @@ class AutoregressiveTransformer(BaseAutoregressiveTransformer):
 
         if class_labels.shape[1] == 1:
             start_symbol_f = self.start_symbol_features(B, room_mask)
-            X = torch.cat([
-                start_symbol_f, self.empty_token_embedding.expand(B, -1, -1)
-            ], dim=1)
+            X = self.empty_token_embedding.expand(B, -1, -1)
         else:
             # Apply the positional embeddings only on bboxes that are not the
             # start token
@@ -190,9 +201,9 @@ class AutoregressiveTransformer(BaseAutoregressiveTransformer):
             start_symbol_f = self.start_symbol_features(B, room_mask)
             # Concatenate with the mask embedding for the start token
             X = torch.cat([
-                start_symbol_f, self.empty_token_embedding.expand(B, -1, -1), X
+                self.empty_token_embedding.expand(B, -1, -1), X
             ], dim=1)
-        X = self.fc(X)
+        X = self.project_tokens(start_symbol_f, X)
         F = self.transformer_encoder(X, length_mask=None)[:, 1:2]
 
         return F
@@ -548,10 +559,9 @@ class AutoregressiveTransformerPE(AutoregressiveTransformer):
 
         start_symbol_f = self.start_symbol_features(B, room_layout)
         # Concatenate with the mask embedding for the start token
-        X = torch.cat([
-            start_symbol_f, self.empty_token_embedding.expand(B, -1, -1), X
-        ], dim=1)
-        X = self.fc(X)
+        X = self.project_tokens(start_symbol_f, torch.cat([
+            self.empty_token_embedding.expand(B, -1, -1), X
+        ], dim=1))
 
         # Compute the features using causal masking
         lengths = LengthMask(
@@ -570,9 +580,7 @@ class AutoregressiveTransformerPE(AutoregressiveTransformer):
 
         if class_labels.shape[1] == 1:
             start_symbol_f = self.start_symbol_features(B, room_mask)
-            X = torch.cat([
-                start_symbol_f, self.empty_token_embedding.expand(B, -1, -1)
-            ], dim=1)
+            X = self.empty_token_embedding.expand(B, -1, -1)
         else:
             # Apply the positional embeddings only on bboxes that are not the
             # start token
@@ -596,9 +604,9 @@ class AutoregressiveTransformerPE(AutoregressiveTransformer):
             start_symbol_f = self.start_symbol_features(B, room_mask)
             # Concatenate with the mask embedding for the start token
             X = torch.cat([
-                start_symbol_f, self.empty_token_embedding.expand(B, -1, -1), X
+                self.empty_token_embedding.expand(B, -1, -1), X
             ], dim=1)
-        X = self.fc(X)
+        X = self.project_tokens(start_symbol_f, X)
         F = self.transformer_encoder(X, length_mask=None)[:, 1:2]
 
         return F
