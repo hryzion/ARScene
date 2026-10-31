@@ -36,6 +36,16 @@ def audit_decode(folder):
              for k, ranges in checkpoint['normalizer'].items()}
     errors = {'position_max_abs_m': 0., 'size_max_abs_m': 0., 'yaw_max_circular_rad': 0.}
     expected_conditions = None
+    expected_room_outer = None
+    if manifest['model'] == 'scenefoundry':
+        from sampling.sample_scenefoundry_room_condition import load_room_masks
+        conditions = json.loads(Path(manifest['conditions']).read_text())
+        expected_conditions, condition_audit = load_room_masks(conditions, checkpoint['config']['dataset']['image_size'])
+        assert condition_audit['room_masks_sha256'] == manifest['room_masks_sha256']
+        if manifest['sampling'].get('room_layout_guidance'):
+            from networks.scenefoundry.room_guidance import load_room_outer_boxes
+            expected_room_outer, room_audit = load_room_outer_boxes(conditions)
+            assert room_audit['room_outer_boxes_sha256'] == manifest['room_guidance_input']['room_outer_boxes_sha256']
     if manifest['model'] == 'midiffusion':
         from sampling.sample_midiffusion_room_condition import load_boundary_conditions
         conditions = json.loads(Path(manifest['conditions']).read_text())
@@ -46,14 +56,21 @@ def audit_decode(folder):
         with np.load(path, allow_pickle=False) as data:
             raw, indices = data['prediction'].astype(np.float64), data['sample_indices']
             if expected_conditions is not None:
-                np.testing.assert_array_equal(data['fpbpn'], expected_conditions[indices].numpy())
+                key = 'room_masks' if manifest['model'] == 'scenefoundry' else 'fpbpn'
+                np.testing.assert_array_equal(data[key], expected_conditions[indices].numpy())
+            if expected_room_outer is not None:
+                np.testing.assert_array_equal(data['room_outer_boxes'], expected_room_outer[indices])
         atiss = manifest['model'] == 'atiss'
         if atiss:
             raw = raw[None]
         for values, index in zip(raw, indices):
             record = json.loads((folder / 'scenes' / f'{index:06d}.json').read_text())
-            labels = values[:, :c].argmax(-1) if atiss else values[:, 8:8+c].argmax(-1)
-            slots = [i for i, label in enumerate(labels) if label < c - 2 and (i > 0 or not atiss)]
+            if manifest['model'] == 'scenefoundry':
+                labels = values[:, 8:8+c-2].argmax(-1)
+                slots = np.flatnonzero(values[:, 8+c-1] < 0).tolist()
+            else:
+                labels = values[:, :c].argmax(-1) if atiss else values[:, 8:8+c].argmax(-1)
+                slots = [i for i, label in enumerate(labels) if label < c - 2 and (i > 0 or not atiss)]
             assert slots == [o['slot'] for o in record['objects']]
             for obj in record['objects']:
                 slot = obj['slot']
@@ -85,6 +102,8 @@ def audit_decode(folder):
               'checkpoint_sha256_matches': True}
     if expected_conditions is not None:
         report['saved_condition_inputs_match_training_preprocessing'] = True
+    if expected_room_outer is not None:
+        report['saved_room_guidance_inputs_match_original_preprocessing'] = True
     write_json(folder / 'decode_audit.json', report)
     return report
 
@@ -135,7 +154,7 @@ def main(root, names=('atiss', 'diffuscene'), output_prefix='comparison', reltre
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
-    parser.add_argument('--models', nargs='+', choices=['atiss', 'diffuscene', 'reltree', 'midiffusion'],
+    parser.add_argument('--models', nargs='+', choices=['atiss', 'diffuscene', 'reltree', 'midiffusion', 'scenefoundry'],
                         default=['atiss', 'diffuscene'])
     parser.add_argument('--output-prefix', default='comparison')
     parser.add_argument('--reltree-subdir', default='reltree')

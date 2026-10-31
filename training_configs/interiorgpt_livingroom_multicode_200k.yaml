@@ -1,0 +1,58 @@
+model:
+  type: sar
+  cond_drop_rate: 0.5
+  depth: 12
+  num_heads: 8
+  word_dim: 768  # Matches the existing multi-codebook Transformer head width.
+  mlp_ratio: 4.0
+  drop_rate: 0.1
+  attn_drop_rate: 0.1
+  drop_path_rate: 0.2
+  shared_aln: true
+  norm_eps: 1.0e-6
+  attn_l2_norm: false
+  use_prior_cluster: false
+  feat_extractor: resnet18
+  bottleneck: residual-vae
+  quant:
+    vq_beta: 1
+    ema_decay: 0.95
+  encoder:
+    type: vqvae
+    token_dim: 64
+    encoder_depth: 6
+    decoder_depth: 4
+    num_bottleneck: 25
+    num_recon: 25
+    num_heads: 8
+    num_embeddings: 2048
+    bottleneck: residual-vae
+    use_codebook: true
+    quant:
+      vq_beta: 1
+      ema_decay: 0.95
+    pretrained_path: ./pretrained/vqvae/residual_vq_livingroom_wo_lat/vqvae.pth
+dataset:
+  filter_fn: livingroom
+  dataset_dir: ./datasets/processed_livingroom
+  use_objlat: false
+  attr_dim: 43
+  num_class: 31
+  padded_length: 27
+super_parameters:
+  batch_size: 128
+  learning_rate: 0.0001
+  cuda: 0
+training:
+  max_steps: 200000
+  resume: auto
+  seed: 42
+  save_every_steps: 1000
+  keep_every_steps: 20000
+  validate_every_steps: 2000
+  log_every_steps: 50
+save:
+  save_folder: ./pretrained/interiorGPT
+  run_directory: ./pretrained/interiorGPT/livingroom_multicode_12x768_drop05_200k
+text_condition: false
+room_mask_condition: true

@@ -10,6 +10,20 @@ from .basic_attention import AdaptLayerNormDecoderBlock
 from utils import check, sample_multicodebook_topk_topp, sample_single_codebook_topk_topp
 
 
+def resolve_cond_drop_rate(config, override=None):
+    """Probability of dropping the room condition for an entire training batch."""
+    value = config.get('model', {}).get('cond_drop_rate', 0.9) if override is None else override
+    if isinstance(value, bool):
+        raise ValueError('model.cond_drop_rate must be a number between 0 and 1')
+    try:
+        rate = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('model.cond_drop_rate must be a number between 0 and 1') from exc
+    if not 0.0 <= rate <= 1.0:
+        raise ValueError('model.cond_drop_rate must be between 0 and 1')
+    return rate
+
+
 class AdaLNBeforeHead(nn.Module):
     def __init__(self, C, D, norm_layer):   # C: embed_dim, D: cond_dim
         super().__init__()
@@ -176,7 +190,7 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
                 config,
                 device,
                 depth = 16, embed_dim = 128, num_heads = 16, mlp_ratio=4., drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
-                shared_aln =False, cond_drop_rate=0.9,norm_eps=1e-6,
+                shared_aln =False, cond_drop_rate=None,norm_eps=1e-6,
                 attn_l2_norm = False,
                 t_scales = [1, 5, 15, 27],
                 use_prior_cluster = False
@@ -185,6 +199,7 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
 
         ####### General Settings #######
         self.config = config
+        self.cond_drop_rate = resolve_cond_drop_rate(config, cond_drop_rate)
         self.padded_length = config['dataset'].get('padded_length', None)
 
         ###############################################
@@ -239,8 +254,6 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
         
         self.null_cond = nn.Parameter(torch.zeros(1, self.C))
 
-        self.cond_drop_rate = cond_drop_rate
-        
 
 
         ################################################
@@ -413,6 +426,5 @@ class RoomLayoutAutoRegressiveNet(nn.Module):
         }
         
             
-
 
 

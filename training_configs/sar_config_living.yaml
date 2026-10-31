@@ -1,5 +1,6 @@
 model:
   type: sar
+  cond_drop_rate: 0.9  # Drop the room condition for a whole batch; 0=always conditioned, 1=unconditional.
   depth: 16
   num_heads: 8
   mlp_ratio: 4.0
@@ -48,8 +49,13 @@ super_parameters:
   weight_decay: 0.00001
   cuda: 0
 
+training:
+  resume: auto  # Resume last.pt in the run directory if present; or set an explicit path / null.
+  seed: 42
+
 save:
-  save_folder: ./pretrained/sceneGPT/depth_16_worddim_512_livingroom
+  checkpoint_every: 200  # Retain a full checkpoint every N epochs; last.pt is saved every epoch.
+  save_folder: ./pretrained/interiorGPT
 
 text_condition: true
 room_mask_condition: true

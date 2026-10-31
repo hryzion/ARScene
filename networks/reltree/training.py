@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 import yaml
 
 from .data import RelTreeCollator, RelTreeDataset
+from .condition_dropout import ConditionDropoutSchedule
 from .loss import reltree_loss
 from .model import RelTree, RelTreeConfig
 from .tokenizer import RelTreeTokenizer
@@ -139,6 +140,9 @@ def train(config, **kwargs):
 
 def _train(config, *, stop, data_root=None, output=None, steps=None, device_name=None, resume=None, overfit_single=False):
     cfg = config["training"]
+    condition_schedule = ConditionDropoutSchedule(cfg.get('condition_dropout_mode', 'scene'),
+        config['model'].get('cond_drop', .1 if config['model'].get('architecture') == 'room_root_ar_v3' else 0.),
+        cfg.get('seed', 42))
     device = torch.device(device_name or cfg.get("device", "cuda:0"))
     if device.type == "cuda":
         if not torch.cuda.is_available():
@@ -194,6 +198,8 @@ def _train(config, *, stop, data_root=None, output=None, steps=None, device_name
                    "sample_ids_sha256": hashlib.sha256(json.dumps([s.sample_id for s in train_data.samples]).encode()).hexdigest(),
                    "geometry_schema": train_data.geometry_schema, "train_data_sha256": train_data.fingerprint,
                    "val_data_sha256": val_data.fingerprint}
+    if condition_schedule.mode != 'scene':
+        train_state['condition_dropout'] = condition_schedule.protocol
     model = (RootARRelTree(tokenizer, model_config) if root_ar else RelTree(tokenizer, model_config)).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg.get("learning_rate", 3e-4)),
                                   weight_decay=float(cfg.get("weight_decay", .01)))
@@ -206,6 +212,9 @@ def _train(config, *, stop, data_root=None, output=None, steps=None, device_name
     resized_batch_from = None
     if resume:
         payload = torch.load(resume, map_location=device, weights_only=False)
+        saved_dropout_mode = payload['config']['training'].get('condition_dropout_mode', 'scene')
+        if saved_dropout_mode != condition_schedule.mode:
+            raise ValueError('resume condition dropout mode differs')
         if RelTreeTokenizer.from_dict(payload["tokenizer"]).signature != tokenizer.signature:
             raise ValueError("resume checkpoint tokenizer differs from dataset")
         saved_model_config = dict(payload["model_config"])
@@ -273,6 +282,7 @@ def _train(config, *, stop, data_root=None, output=None, steps=None, device_name
          "train_scenes": len(train_data), "val_scenes": len(val_data), "parameters": sum(p.numel() for p in model.parameters()),
          "step": step, "epoch": start_epoch, "batch_in_epoch": batch_in_epoch, "samples_in_epoch": samples_in_epoch,
          "batch_size": batch_size, "max_steps": max_steps,
+         "condition_dropout": condition_schedule.protocol,
          "resume": str(resume) if resume else None})
     if resized_batch_from is not None:
         # Preserve the exact pre-change checkpoint before last.pt is updated.
@@ -306,8 +316,15 @@ def _train(config, *, stop, data_root=None, output=None, steps=None, device_name
                 model.train()
                 packed = packed.to(device)
                 optimizer.zero_grad(set_to_none=True)
+                forward_kwargs, condition_metrics = {}, {}
+                if condition_schedule.mode == 'balanced_step':
+                    drop_condition = condition_schedule.drop(step)
+                    forward_kwargs['condition_drop_mask'] = torch.full(
+                        (len(packed.query_positions),), drop_condition, dtype=torch.bool, device=device)
+                    condition_metrics = {'conditioning': 'unconditional' if drop_condition else 'roomshape',
+                                         **condition_schedule.counts(step + 1)}
                 with amp_context(device, precision):
-                    loss, metrics = reltree_loss(model(packed.inputs), packed, **loss_config)
+                    loss, metrics = reltree_loss(model(packed.inputs, **forward_kwargs), packed, **loss_config)
                 if not torch.isfinite(loss):
                     raise FloatingPointError(f"nonfinite training loss at step {step}")
                 scaler.scale(loss).backward()
@@ -318,9 +335,9 @@ def _train(config, *, stop, data_root=None, output=None, steps=None, device_name
                 step += 1
                 batch_in_epoch += 1
                 samples_in_epoch += len(packed.query_positions)
-                if step == 1 or step % int(cfg.get("log_every", 20)) == 0:
+                if step == 1 or (step == 2 and condition_metrics) or step % int(cfg.get("log_every", 20)) == 0:
                     log({"event": "train", "step": step, "epoch": epoch, "batch_in_epoch": batch_in_epoch,
-                         **metrics, "grad_norm": float(grad_norm)})
+                         **metrics, **condition_metrics, "grad_norm": float(grad_norm)})
                 if step % checkpoint_every == 0:
                     checkpoint()
                 if stop.signum is not None:
@@ -362,6 +379,8 @@ def _train(config, *, stop, data_root=None, output=None, steps=None, device_name
                "final_train": final_train, "initial_val": initial_val, "final_val": final_val,
                "generation_statuses": dict(Counter(r["status"] for r in generated)),
                "gpu_peak_memory_mb": torch.cuda.max_memory_allocated(device) / 2**20 if device.type == "cuda" else 0.}
+    if condition_schedule.mode == 'balanced_step':
+        summary.update(condition_schedule.counts(step))
     (output / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False) + "\n")
     (output / "completed.json").write_text(json.dumps({"step": step, "epoch": epoch, "max_steps": max_steps}) + "\n")
     log({"event": "complete", **summary})

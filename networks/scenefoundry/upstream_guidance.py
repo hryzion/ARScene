@@ -3,7 +3,7 @@
 No class/method extraction, subclassing, gradient override, or replacement IoU.
 The original .py files are executed by Python's source loader unchanged. Optional
 asset/rendering imports are isolated because they collide with ARScene modules
-and are not used by the supported bbox collision / quantity branches.
+and are not used by the supported bbox collision / room-layout / quantity branches.
 """
 
 import builtins
@@ -102,7 +102,7 @@ def load_upstream():
 
     def source_open(file, *args, **kwargs):
         # __init__ unconditionally reads this unreleased asset index. class_db
-        # is unused by bbox collision and quantity guidance. Do not fabricate
+        # is unused by bbox collision, room-layout and quantity guidance. Do not fabricate
         # assets or bypass __init__: supply an explicitly empty asset index.
         if str(file) == 'living_room_lat32.json':
             asset_index = SOURCE_ROOT / str(file)
@@ -139,14 +139,16 @@ class ARSceneGuidanceDataset:
         return result
 
 
-def create_collision_optimizer(normalizer, class_dim, *, device='cuda', target_count=None):
+def create_collision_optimizer(normalizer, class_dim, *, device='cuda', target_count=None,
+                               room_layout=False):
     """Construct an actual upstream CollisionOptimizer, with no method overrides."""
     collision, _ = load_upstream()
     config = OmegaConf.load(SOURCE_ROOT / 'configs/optimizer/collision.yaml')
     if config.collision_type != 'bbox_IOU' or not config.guidance.collision:
         raise ValueError('This data adapter supports the original bbox collision configuration')
-    if any(config.guidance[name] for name in ('open', 'room_layout', 'reachability', 'arti_collision')):
-        raise ValueError('Asset and floor-dependent branches require their original datasets')
+    if any(config.guidance[name] for name in ('open', 'reachability', 'arti_collision')):
+        raise ValueError('Asset and walkability branches require their original datasets')
+    config.guidance.room_layout = bool(room_layout)
     if target_count is not None:
         config.guidance.num_control = True
         config.guidance.obj_num = int(target_count)

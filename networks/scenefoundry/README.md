@@ -119,6 +119,32 @@ tmux new-session -d -s scenefoundry-room-eps-500k \
 
 ## 加载 checkpoint
 
+### Room-condition 1000 场景评测
+
+复用 ATISS / DiffuScene / MiDiffusion 的同一份测试房间 `conditions.json`，使用
+`livingroom_roomshape_eps_500k/best.pt`、FP32、batch=128、1000 步 DDPM。
+房间 mask 按训练时的 RGB 双线性缩放、第一通道、除以 255 处理，实际输入为
+`[B,1,64,64]`。碰撞和 room-layout guidance 直接调用原仓库 `CollisionOptimizer`，
+保留 batch mean，均仅最后 10 步启用；权重分别为源码默认的 2 和 300000，
+不指定物体数量。房间边界转换为顺时针 XZ 顶点，直接调用原仓库
+`Room.calc_box_from_polygon(points, 50)`，按源码补零到 `[B,50,7]`。
+不修正原版包围盒预处理的数值误差，也不对输入边界做吸附、简化或其他修补。
+
+```bash
+sbatch sampling/scenefoundry_room_condition_1000.sbatch \
+  pretrained/room_condition_500k/evaluation_best_1000_20261012_232434
+```
+
+结果保存在评测根目录的 `scenefoundry_collision_room_guidance/`，原来的
+`scenefoundry/` 碰撞 guidance 结果保留。脚本第二参数可指定输出目录，第三参数可选
+`collision_room`（默认）、`collision` 或 `none`。作业依次执行采样、项目 OBB collision /
+footprint OOB 评测、独立解码核对；分别输出 `report.json`、
+`collision_oob_metrics.json` 和 `decode_audit.json`。`guidance_verification.json`
+核对原版类/方法来源、原版 CUDA IoU、room-layout 梯度及 batch mean；
+`room_guidance_audit.json` 记录外部包围盒来源、覆盖误差和哈希（只记录，不修正）。
+原始预测、实际 mask 和外部包围盒保存在 `raw/batch_*.npz`。
+有效槽位沿用 SceneFoundry 的 signed END < 0 判定。
+
 ```python
 import torch
 from networks.scenefoundry.step_training import load_for_inference

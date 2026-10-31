@@ -1,3 +1,5 @@
+"""Sample with --checkpoint last.pt, or --checkpoint weights.pth --config CONFIG."""
+
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -6,6 +8,7 @@ import torch.nn.functional as F
 from datasets.SceneTokenNormalizer import SceneTokenNormalizer
 from networks.roomlayout.RoomLayoutVQVAE import RoomLayoutVQVAE  
 from networks.roomlayout.RoomLayoutAutoRegressiveNet import RoomLayoutAutoRegressiveNet
+from networks.roomlayout.checkpoint import load_sampling_checkpoint
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 from config import parse_arguments
 from utils import decode_obj_tokens_with_mask, visualize_result, pack_scene_json
@@ -19,10 +22,9 @@ def load_test_dataset(dataset_dir,dataset_padded_length, num_classes=31):
     return ThreeDFrontDataset(npz_dir=f'{dataset_dir}',split='test',padded_length = dataset_padded_length, num_cate=num_classes)
 
 def main():
-    import yaml
-    args = parse_arguments()
-    with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
+    args = parse_arguments(ar_sampling=True)
+    config, state_dict, checkpoint_path = load_sampling_checkpoint(args.config, args.checkpoint, args.tag)
+    print(f'[Sampling] Loading {checkpoint_path}')
 
     super_parameters = config['super_parameters']
     BATCH_SIZE = int(super_parameters.get('batch_size', 64))
@@ -61,18 +63,11 @@ def main():
     HEADS = int(encoder_config.get('num_heads', 4))
     NUM_EMBEDDINGS =  int(encoder_config.get('num_embeddings', 512))
     TOKEN_DIM  = int(encoder_config.get('token_dim', 64))
-    encoder_pretrained_path = encoder_config.get('pretrained_path', None)
 
     # --------------------- save -----------------------
 
-    save_config = config.get('save', {})
-    save_folder = save_config.get('save_folder',"./pretrained/sceneautoregressive/")
+    save_folder = args.output or str(checkpoint_path.parent)
     os.makedirs(save_folder,exist_ok=True)
-
-    with open(os.path.join(save_folder, 'config.yaml'), "w", encoding="utf-8") as f:
-        yaml.dump(config, f, allow_unicode=True)
-
-    save_path = os.path.join(save_folder, f"{model_config['type']}_{args.tag}.pth")
     # os.makedirs(save_folder, exist_ok=True)
     
     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else 'cpu')
@@ -101,9 +96,8 @@ def main():
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
     ae_encoder = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, test_mode=True, configs=config,num_bottleneck=num_bn, num_recon=num_recon, num_classes=dataset_num_class).to(device)
-    ae_encoder.load_state_dict(torch.load(f'{encoder_pretrained_path}', map_location=device))
-
-    feat_extractor = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1).to(device)
+    # Both checkpoint formats include the VQVAE and feature-extractor parameters.
+    feat_extractor = models.resnet18(weights=None).to(device)
     feat_extractor.fc = nn.Identity()  # 去掉最后的分类层
     
     sar = RoomLayoutAutoRegressiveNet(
@@ -114,7 +108,8 @@ def main():
         use_prior_cluster=use_prior_cluster
     ).to(device)
 
-    sar.load_state_dict(torch.load(f"{save_path}", map_location=device))
+    sar.load_state_dict(state_dict)
+    del state_dict
     sar.to(device)
     sar.eval()
 

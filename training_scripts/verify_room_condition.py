@@ -22,8 +22,10 @@ def main(args):
     root = Path(cfg['training']['output'])
     output = root / 'verification'
     output.mkdir(parents=True, exist_ok=True)
-    mask_audit = json.loads(Path('pretrained/room_condition_500k/mask_audit.json').read_text())
+    mask_audit = json.loads(args.mask_audit.read_text())
     assert mask_audit['passed']
+    assert Path(mask_audit['dataset']).resolve() == Path(cfg['dataset']['root']).resolve()
+    assert mask_audit['image_size'] == cfg['dataset']['image_size']
     assert cfg['training']['max_steps'] == 500000
     assert set(cfg['dataset']['augmentations']) == {'fixed_rotations', 'permutation'}
     started = time.monotonic()
@@ -118,4 +120,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', choices=['atiss', 'diffuscene'], required=True)
     parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--mask-audit', type=Path,
+                        default=Path('pretrained/room_condition_500k/mask_audit.json'))
     main(parser.parse_args())

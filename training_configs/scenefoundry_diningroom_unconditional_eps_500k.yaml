@@ -1,0 +1,81 @@
+# SceneFoundry on ARScene diningroom, matching the other baselines' 500k update budget.
+# Network/loss: released SceneFoundry, eps prediction, separated MSE + 0.5 IoU.
+# Data adaptation: 31 furniture classes + START/END, full OBB sizes, no shape latents.
+dataset:
+  root: ./datasets/atiss_diningroom_obb_v2_wo_lat
+  filter_fn: diningroom
+  use_objlat: false
+  num_class: 31
+  padded_length: auto
+  image_size: 64
+  augmentations: [fixed_rotations, permutation]
+normalization:
+  rotation_normalization: auto
+network:
+  type: scenefoundry
+  net_type: unet1d
+  room_mask_condition: false
+  text_condition: false
+  room_partial_condition: false
+  room_arrange_condition: false
+  objectness_dim: 0
+  class_dim: 33
+  translation_dim: 3
+  size_dim: 3
+  angle_dim: 2
+  objfeat_dim: 0
+  point_dim: 41
+  size_is_full: true
+  learnable_embedding: true
+  instance_condition: true
+  instance_emb_dim: 128
+  latent_dim: 512
+  sample_num_points: auto
+  diffusion_kwargs:
+    schedule_type: linear
+    beta_start: 0.0001
+    beta_end: 0.02
+    time_num: 1000
+    loss_type: mse
+    model_mean_type: eps
+    model_var_type: fixedsmall
+    loss_separate: true
+    loss_iou: true
+  net_kwargs:
+    dim: 512
+    dim_mults: [1, 1, 1, 1]
+    channels: 41
+    objectness_dim: 0
+    class_dim: 33
+    translation_dim: 3
+    size_dim: 3
+    angle_dim: 2
+    objfeat_dim: 0
+    context_dim: 0
+    instanclass_dim: 128
+    text_condition: false
+    seperate_all: true
+training:
+  output: pretrained/scenefoundry/diningroom_unconditional_eps_500k
+  max_steps: 500000
+  splits: [train]
+  batch_size: 128
+  precision: fp32
+  optimizer: Adam
+  lr: 0.0002
+  weight_decay: 0.0
+  lr_step: 120000
+  lr_decay: 0.5
+  max_grad_norm: 10.0
+  seed: 42
+  cpu_threads: 4
+  num_workers: 0
+  log_every: 20
+  save_every: 1000
+  keep_every: 100000
+  validate_every: 1000
+validation:
+  splits: [val]
+  batch_size: 128
+logger:
+  type: jsonl

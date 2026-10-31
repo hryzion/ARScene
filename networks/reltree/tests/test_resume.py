@@ -46,7 +46,10 @@ class ResumeTests(unittest.TestCase):
     def test_room_root_signal_resume_matches_uninterrupted_training(self):
         self.check_signal_resume(root_ar=True)
 
-    def check_signal_resume(self, root_ar):
+    def test_balanced_steps_resume_inside_pair_matches_uninterrupted_training(self):
+        self.check_signal_resume(root_ar=True, condition_dropout_mode='balanced_step')
+
+    def check_signal_resume(self, root_ar, condition_dropout_mode='scene'):
         device = os.environ.get("RELTREE_TEST_DEVICE", "cpu")
         tokenizer, encoded, condition = fixture()
         with tempfile.TemporaryDirectory() as directory:
@@ -64,6 +67,7 @@ class ResumeTests(unittest.TestCase):
                                    "epochs": 2, "max_steps": None, "checkpoint_every": 1,
                                    "validate_every": 10, "sample_count": 0, "initial_evaluation": False,
                                    "seed": 23, "cpu_threads": 2}}
+            config['training']['condition_dropout_mode'] = condition_dropout_mode
             baseline = root / "baseline"
             if root_ar:
                 config['model']['architecture'] = 'room_root_ar_v3'
@@ -83,6 +87,16 @@ class ResumeTests(unittest.TestCase):
             self.assertFalse((resumed / "completed.json").exists())
             finished = train(config, output=resumed, resume=resumed / "last.pt")
             self.assertEqual(finished["steps"], 4)
+            if condition_dropout_mode == 'balanced_step':
+                self.assertEqual(finished['conditional_steps'], 2)
+                self.assertEqual(finished['unconditional_steps'], 2)
+                events = [json.loads(line) for line in (baseline / 'metrics.jsonl').read_text().splitlines()]
+                first = [event for event in events if event['event'] == 'train' and event['step'] <= 2]
+                self.assertEqual({event['conditioning'] for event in first}, {'roomshape', 'unconditional'})
+                incompatible = copy.deepcopy(config)
+                incompatible['training']['condition_dropout_mode'] = 'scene'
+                with self.assertRaisesRegex(ValueError, 'condition dropout mode'):
+                    train(incompatible, output=root / 'wrong_mode', resume=resumed / 'last.pt')
             a = torch.load(baseline / "last.pt", weights_only=False, map_location="cpu")
             b = torch.load(resumed / "last.pt", weights_only=False, map_location="cpu")
             self.assertEqual((b["epoch"], b["batch_in_epoch"]), (2, 0))

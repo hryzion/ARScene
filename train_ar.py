@@ -1,7 +1,33 @@
+"""InteriorGPT training with configurable room-condition dropout and epoch resume.
+
+Set training.max_steps for an exact update budget and mid-epoch checkpoint resume.
+Otherwise the original epoch-budget path below remains available.
+YAML: model.cond_drop_rate (0..1, default 0.9), training.resume (auto/path/null),
+training.seed (default 42), save.checkpoint_every (retained copies, in epochs).
+super_parameters.epochs is the TOTAL budget, including previously completed epochs.
+
+Examples:
+    python train_ar.py --config CONFIG --output RUN
+    python train_ar.py --config CONFIG --resume RUN/last.pt
+    python train_ar.py --config CONFIG --output NEW_RUN --resume none --weights OLD.pth
+
+last.pt saves model, Adam, epoch/step, metrics, config and RNG states after validation
+at every epoch boundary. An interrupted partial epoch is replayed from that boundary.
+sar_latest.pth remains a plain state_dict for existing inference scripts. Full resume
+restores the saved optimizer learning rate; the current YAML controls condition dropout.
+"""
+
+import copy
+from pathlib import Path
+
 import torch
 from networks.roomlayout.RoomLayoutVQVAE import RoomLayoutVQVAE
 from networks.roomlayout.quant import TokenSequentializer
-from networks.roomlayout.RoomLayoutAutoRegressiveNet import RoomLayoutAutoRegressiveNet
+from networks.roomlayout.RoomLayoutAutoRegressiveNet import RoomLayoutAutoRegressiveNet, resolve_cond_drop_rate
+from networks.roomlayout.checkpoint import (
+    CHECKPOINT_FORMAT, atomic_save, load_checkpoint, load_weights, loader_rng_state,
+    resolve_resume, restore_loader_rng, restore_rng, rng_state, seed_rng, validate_resume_config,
+)
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 from datasets.SceneTokenNormalizer import SceneTokenNormalizer
 import torch.nn as nn
@@ -12,9 +38,8 @@ from config import parse_arguments
 import os
 import wandb
 from torchvision import models
-from losses.ar_loss import AutoregressiveTokenLoss, MultiCodebookCrossEntropy
-import torch.nn.functional as F
-from utils import THREED_FRONT_CATEGORY, count_trainable_params
+from losses.ar_loss import MultiCodebookCrossEntropy
+from utils import count_trainable_params
 
 def train_model(
     model : RoomLayoutAutoRegressiveNet,
@@ -23,13 +48,33 @@ def train_model(
     device,
     num_epochs=10,
     lr=1e-4,
-    save_path='best_model.pth',
+    save_path='./pretrained/interiorGPT/sar.pth',
     criterion = None,
     configs = None,
-    use_wandb = False
+    use_wandb = False,
+    resume = None,
+    weights = None,
 ):  
-    
-    
+    if (configs or {}).get('training', {}).get('max_steps') is not None:
+        from networks.roomlayout.step_training import train_steps
+        return train_steps(model, train_loader, val_loader, device, lr=lr, save_path=save_path,
+                           criterion=criterion, configs=configs, use_wandb=use_wandb,
+                           resume=resume, weights=weights)
+    configs = copy.deepcopy(configs or {})
+    training_config = configs.get('training', {})
+    resume = training_config.get('resume') if resume is None else resume
+    weights = training_config.get('weights') if weights is None else weights
+    save_path = Path(save_path)
+    output = save_path.parent
+    resume_path = resolve_resume(resume, output)
+    if resume_path is not None and weights is not None:
+        raise ValueError('Use either resume or weights, not both')
+    if resume_path is None and (output / 'last.pt').exists():
+        raise ValueError('last.pt already exists; use --resume auto or choose a new --output')
+    checkpoint_every = int(configs.get('save', {}).get('checkpoint_every', 200))
+    if checkpoint_every < 0:
+        raise ValueError('save.checkpoint_every must be nonnegative (0 disables retained copies)')
+
     t_sequentializer : TokenSequentializer = model.vae_token_sequentializer
     optimizer = optim.Adam(model.parameters(), lr=lr)
     if criterion is None:
@@ -39,9 +84,48 @@ def train_model(
 
     train_loss_recorder = []
     val_loss_recorder = []
+    start_epoch = 0
+    global_step = 0
 
+    if resume_path is not None:
+        checkpoint = load_checkpoint(resume_path)
+        if checkpoint.get('training_mode') == 'steps':
+            raise ValueError('This is a step checkpoint; set training.max_steps to resume it')
+        validate_resume_config(checkpoint['config'], configs)
+        model.load_state_dict(checkpoint['model'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        start_epoch = checkpoint['next_epoch']
+        global_step = checkpoint['global_step']
+        best_val_loss = checkpoint['best_val_loss']
+        train_loss_recorder = checkpoint['train_losses']
+        val_loss_recorder = checkpoint['val_losses']
+        restore_loader_rng(train_loader, checkpoint['loader_rng']['train'])
+        restore_loader_rng(val_loader, checkpoint['loader_rng']['val'])
+        restore_rng(checkpoint['rng'])
+        previous_rate = checkpoint['config'].get('model', {}).get('cond_drop_rate', 0.9)
+        if previous_rate != model.cond_drop_rate:
+            print(f'[Resume] condition drop rate: {previous_rate} -> {model.cond_drop_rate} (current YAML)')
+        print(f'[Resume] {resume_path}: {start_epoch} epochs, {global_step} updates completed; '
+              f'optimizer lr={optimizer.param_groups[0]["lr"]}')
+        del checkpoint
+    elif weights is not None:
+        model.load_state_dict(load_weights(weights))
+        print(f'[Weights] Loaded {weights}; starting epoch 1 with a fresh optimizer')
 
-    for epoch in range(num_epochs):
+    configs.setdefault('model', {})['cond_drop_rate'] = model.cond_drop_rate
+    print(f'[Training] room_mask_condition={model.room_mask_condition}, '
+          f'cond_drop_rate={model.cond_drop_rate}, target_epochs={num_epochs}')
+    if start_epoch >= num_epochs:
+        print('[Training] The checkpoint already reached the requested total epochs')
+        if use_wandb:
+            wandb.finish()
+        return train_loss_recorder, val_loss_recorder
+    output.mkdir(parents=True, exist_ok=True)
+    import yaml
+    with (output / 'config.yaml').open('w', encoding='utf-8') as stream:
+        yaml.safe_dump(configs, stream, allow_unicode=True)
+
+    for epoch in range(start_epoch, num_epochs):
         model.train()
         train_loss = 0
 
@@ -52,17 +136,19 @@ def train_model(
             text_desc = batch['text_desc']
 
             
-            token_map = model.vae.encode_obj_tokens(obj_tokens, padding_mask=key_padding_mask)
-            residual_fm_gt_list = t_sequentializer.generate_residual_fm_gt(token_map)
-            x_wo_first = t_sequentializer.generate_scaling_input(residual_fm_gt_list)
-            residual_fm_gt = torch.cat(residual_fm_gt_list, dim = 1)
-            encoded_gt = t_sequentializer.get_encoded_token_map(residual_fm_gt=residual_fm_gt)
+            with torch.no_grad():
+                token_map = model.vae.encode_obj_tokens(obj_tokens, padding_mask=key_padding_mask)
+                residual_fm_gt_list = t_sequentializer.generate_residual_fm_gt(token_map)
+                x_wo_first = t_sequentializer.generate_scaling_input(residual_fm_gt_list)
+                residual_fm_gt = torch.cat(residual_fm_gt_list, dim = 1)
+                encoded_gt = t_sequentializer.get_encoded_token_map(residual_fm_gt=residual_fm_gt)
             optimizer.zero_grad()
 
             logits= model(x_wo_first, text_desc, room_shape, encoded_gt)
             loss, loss_dict = criterion(logits, residual_fm_gt)
             loss.backward()
             optimizer.step()
+            global_step += 1
             train_loss += loss.item()
 
         avg_train_loss = train_loss / len(train_loader)
@@ -71,41 +157,56 @@ def train_model(
 
         model.eval()
         val_loss = 0
-        for batch in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
-            room_shape = batch['room_shape'].to(device)
-            obj_tokens = batch['obj_tokens'].to(device)
-            key_padding_mask = batch['attention_mask'].to(device)
-            text_desc = batch['text_desc']
+        with torch.no_grad():
+            for batch in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"):
+                room_shape = batch['room_shape'].to(device)
+                obj_tokens = batch['obj_tokens'].to(device)
+                key_padding_mask = batch['attention_mask'].to(device)
+                text_desc = batch['text_desc']
 
-            token_map = model.vae.encode_obj_tokens(obj_tokens, padding_mask=key_padding_mask)
-            residual_fm_gt_list = t_sequentializer.generate_residual_fm_gt(token_map)
-            x_wo_first = t_sequentializer.generate_scaling_input(residual_fm_gt_list)
-            residual_fm_gt = torch.cat(residual_fm_gt_list, dim = 1)
-            encoded_gt = t_sequentializer.get_encoded_token_map(residual_fm_gt)
-            
+                token_map = model.vae.encode_obj_tokens(obj_tokens, padding_mask=key_padding_mask)
+                residual_fm_gt_list = t_sequentializer.generate_residual_fm_gt(token_map)
+                x_wo_first = t_sequentializer.generate_scaling_input(residual_fm_gt_list)
+                residual_fm_gt = torch.cat(residual_fm_gt_list, dim = 1)
+                encoded_gt = t_sequentializer.get_encoded_token_map(residual_fm_gt)
 
-            logits=  model(x_wo_first, text_desc, room_shape, encoded_gt)
-            loss, loss_dict = criterion(logits, residual_fm_gt)
-            val_loss += loss.item()
+                logits= model(x_wo_first, text_desc, room_shape, encoded_gt)
+                loss, loss_dict = criterion(logits, residual_fm_gt)
+                val_loss += loss.item()
 
         avg_val_loss = val_loss / len(val_loader)
         val_loss_recorder.append(avg_val_loss)
+        best_val_loss = min(best_val_loss, avg_val_loss)
         print(f"Epoch {epoch+1}/{num_epochs} -  Val Loss =  {avg_val_loss:.4f}")
 
         if use_wandb:
             wandb.log({
                 'train/total loss': avg_train_loss,
                 'val/total': avg_val_loss,
+                'epoch': epoch + 1,
+                'global_step': global_step,
+                'cond_drop_rate': model.cond_drop_rate,
             })
 
-        # if avg_val_loss < best_val_loss:
-        #     best_val_loss = avg_val_loss
-        #     torch.save(model.state_dict(), save_path)
-        #     print(f"  Saved Best Model with Val Loss: {best_val_loss:.4f}")
-        
-        if epoch % 200 == 0:
-            torch.save(model.state_dict(), f'{save_path[:-4]}_{epoch}.pth')
-        torch.save(model.state_dict(), f'{save_path[:-4]}_latest.pth')
+        checkpoint = {
+            'format': CHECKPOINT_FORMAT,
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'next_epoch': epoch + 1,
+            'global_step': global_step,
+            'best_val_loss': best_val_loss,
+            'train_losses': train_loss_recorder,
+            'val_losses': val_loss_recorder,
+            'config': configs,
+            'rng': rng_state(),
+            'loader_rng': {'train': loader_rng_state(train_loader), 'val': loader_rng_state(val_loader)},
+        }
+        atomic_save(checkpoint, output / 'last.pt')
+        # Keep plain state_dict exports compatible with test_ar.py / intermediate_ar.py.
+        atomic_save(checkpoint['model'], output / f'{save_path.stem}_latest.pth')
+        if checkpoint_every and (epoch + 1) % checkpoint_every == 0:
+            atomic_save(checkpoint, output / f'epoch_{epoch + 1:06d}.pt')
+            atomic_save(checkpoint['model'], output / f'{save_path.stem}_{epoch}.pth')
     if use_wandb:
         wandb.finish()
     return train_loss_recorder, val_loss_recorder
@@ -114,9 +215,17 @@ def train_model(
 
 if __name__ == "__main__":
     import yaml
-    args = parse_arguments()
+    args = parse_arguments(ar_training=True)
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+    config['model']['cond_drop_rate'] = resolve_cond_drop_rate(config)
+    training_config = config.setdefault('training', {})
+    if args.max_steps is not None:
+        training_config['max_steps'] = args.max_steps
+    resume = args.resume if args.resume is not None else training_config.get('resume')
+    weights = args.weights if args.weights is not None else training_config.get('weights')
+    training_config.update(resume=resume, weights=weights)
+    seed_rng(int(training_config.get('seed', 42)))
 
     # --------------------- super_parameters -----------------------
 
@@ -175,8 +284,8 @@ if __name__ == "__main__":
 
     # --------------------- save -----------------------
 
-    save_config = config.get('save', {})
-    save_folder = save_config.get('save_folder',"./pretrained/sceneautoregressive/")
+    save_config = config.setdefault('save', {})
+    save_folder = save_config.get('save_folder', "./pretrained/interiorGPT")
     tag = f"{dataset_filter}"+"_depth"+str(sar_depth)+"_worddim"+str(word_dim)+f'_vocab{NUM_EMBEDDINGS}'
     if not config.get("text_condition", False):
         tag+='_wo_textc'
@@ -184,15 +293,19 @@ if __name__ == "__main__":
         tag+='_lat64'
     else:
         tag+='_wo_lat'
-    save_folder = os.path.join(save_folder, tag)
+    if args.output:
+        save_folder = args.output
+    elif resume not in (None, 'auto', 'none'):
+        save_folder = str(Path(resume).expanduser().parent)
+    else:
+        save_folder = save_config.get('run_directory', os.path.join(save_folder, tag))
+    resume_path = resolve_resume(resume, save_folder)
+    if resume_path is not None and weights is not None:
+        raise ValueError('Use either resume or weights, not both')
     config['save']['save_folder'] = save_folder
-    os.makedirs(save_folder,exist_ok=True)
-
-    with open(os.path.join(save_folder, 'config.yaml'), "w", encoding="utf-8") as f:
-        yaml.dump(config, f, allow_unicode=True)
+    config['save']['run_directory'] = save_folder
 
     save_path = os.path.join(save_folder, f"{model_config['type']}.pth")
-    os.makedirs(save_folder, exist_ok=True)
     
 
 
@@ -218,9 +331,11 @@ if __name__ == "__main__":
     ae_encoder = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, test_mode=True, configs=config,num_bottleneck=num_bn, num_recon=num_recon,num_classes=dataset_num_class).to(device)
 
     # ae_encoder = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS, test_mode=True, configs=config).to(device)
-    ae_encoder.load_state_dict(torch.load(f'{encoder_pretrained_path}', map_location=device))
+    if resume_path is None and weights is None:
+        ae_encoder.load_state_dict(torch.load(encoder_pretrained_path, map_location=device, weights_only=True))
     
-    feat_extractor = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1).to(device)
+    pretrained_resnet = models.ResNet18_Weights.IMAGENET1K_V1 if resume_path is None and weights is None else None
+    feat_extractor = models.resnet18(weights=pretrained_resnet).to(device)
     feat_extractor.fc = nn.Identity()  # 去掉最后的分类层
 
     
@@ -257,5 +372,7 @@ if __name__ == "__main__":
         save_path=save_path,
         criterion=ar_loss,
         configs = config,
-        use_wandb = args.wandb
+        use_wandb = args.wandb,
+        resume=resume,
+        weights=weights,
     )

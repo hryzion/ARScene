@@ -1,0 +1,45 @@
+dataset:
+  root: datasets/processed_reltree_diningroom_v2
+model:
+  architecture: room_root_ar_v3
+  width: 768
+  layers: 12
+  heads: 12
+  ff_multiplier: 4
+  dropout: 0.1
+  cond_drop: 0.5
+  max_depth: 32
+  boundary_points: 32
+  boundary_scale_m: 16.0
+  room_size_bins: [256, 256, 256]
+  room_size_maxima: [16.0, 8.0, 16.0]
+  attribute_layers: 2
+  attribute_width: 256
+  attribute_heads: 4
+  attribute_ff_multiplier: 4
+training:
+  device: cuda:0
+  precision: bf16
+  batch_size: 128
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  grad_clip: 1.0
+  # Each two optimizer steps contain one conditional and one unconditional batch.
+  condition_dropout_mode: balanced_step
+  epochs: 6000  # 35 steps/epoch; 6000 epochs allow 210000 updates.
+  max_steps: 200000
+  checkpoint_every: 100
+  validate_every: 1000
+  log_every: 20
+  initial_evaluation: false
+  seed: 42
+  cpu_threads: 4
+  num_workers: 0
+  sample_count: 4
+  sample_max_depth: 12
+  output: networks/reltree/runs/diningroom_root_ar_12x768_attr256_cd50_step_200k
+loss:
+  type_weight: 1.0
+  geometry_weights: [1, 1, 1, 1, 1, 1, 1]
+  class_weight: 1.0
+  room_size_weight: 1.0
