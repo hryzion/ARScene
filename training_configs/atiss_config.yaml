@@ -1,13 +1,14 @@
 dataset:
   use_objlat: False
-  filter_fn: bedroom
-  dataset_dir: ./datasets/atiss_bedroom
+  filter_fn: livingroom
+  dataset_dir: ./datasets/atiss_livingroom
   attr_dim: 43
   padded_length: 27
   num_class: 31
 
 super_parameters:
-  epochs: 4000
+  epochs: 1000
+  steps_per_epoch: 500
   batch_size: 128
   learning_rate: 0.0001
   weight_decay: 0.00001
@@ -19,30 +20,36 @@ save:
 
 network: 
   type: atiss
-  n_layers: 4
+  size_name: d12_h768_p64
+  property_dim: 64
+  room_feature_dim: 512
+  n_layers: 12
   n_heads: 8
-  query_dimensions: 64
-  value_dimensions: 64
-  feed_forward_dimensions: 1024
+  query_dimensions: 96
+  value_dimensions: 96
+  feed_forward_dimensions: 1536
   hidden2output_layer: "autoregressive_mlc"
-  hidden_dims: 512
+  hidden_dims: 768
   with_extra_fc: false
   bbox_output: "autoregressive_mlc"
   n_mixtures: 10
-  use_room_mask_as_features: true
+  use_room_mask_as_features: False
 
 training:
     splits: ["train", "val"]
     epochs: 10000
     steps_per_epoch: 500
     batch_size: 128
-    save_frequency: 50
+    save_frequency: 40
     optimizer: Adam
     lr: 0.0001
     weight_decay: 0.0
 
 loss:
   beta: 0.25
+
+validation:
+  frequency: 10
 
 
 logger:

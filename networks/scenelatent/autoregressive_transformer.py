@@ -18,6 +18,14 @@ from .base import FixedPositionalEncoding
 class BaseAutoregressiveTransformer(nn.Module):
     def __init__(self, input_dims, hidden2output, feature_extractor, config):
         super().__init__()
+        self.use_room_mask_as_features = bool(
+            config.get("use_room_mask_as_features", True)
+        )
+        self.property_dim = int(config.get("property_dim", 64))
+        self.input_embedding_dim = int(
+            config.get("input_embedding_dim", self.property_dim * 8)
+        )
+        self.room_feature_dim = int(config.get("room_feature_dim", 512))
         # Build a transformer encoder
         self.transformer_encoder = TransformerEncoderBuilder.from_kwargs(
             n_layers=config.get("n_layers", 6),
@@ -33,26 +41,24 @@ class BaseAutoregressiveTransformer(nn.Module):
 
         self.register_parameter(
             "start_token_embedding",
-            nn.Parameter(torch.randn(1, 512))
+            nn.Parameter(torch.randn(1, self.input_embedding_dim))
         )
 
-        # TODO: Add the projection dimensions for the room features in the
-        # config!!!
         self.feature_extractor = feature_extractor
         self.fc_room_f = nn.Linear(
-            512, 512 # ZHX note: modified
+            self.room_feature_dim, self.input_embedding_dim
         )
 
         # Positional encoding for each property
-        self.pe_pos_x = FixedPositionalEncoding(proj_dims=64)
-        self.pe_pos_y = FixedPositionalEncoding(proj_dims=64)
-        self.pe_pos_z = FixedPositionalEncoding(proj_dims=64)
+        self.pe_pos_x = FixedPositionalEncoding(proj_dims=self.property_dim)
+        self.pe_pos_y = FixedPositionalEncoding(proj_dims=self.property_dim)
+        self.pe_pos_z = FixedPositionalEncoding(proj_dims=self.property_dim)
 
-        self.pe_size_x = FixedPositionalEncoding(proj_dims=64)
-        self.pe_size_y = FixedPositionalEncoding(proj_dims=64)
-        self.pe_size_z = FixedPositionalEncoding(proj_dims=64)
+        self.pe_size_x = FixedPositionalEncoding(proj_dims=self.property_dim)
+        self.pe_size_y = FixedPositionalEncoding(proj_dims=self.property_dim)
+        self.pe_size_z = FixedPositionalEncoding(proj_dims=self.property_dim)
 
-        self.pe_angle_z = FixedPositionalEncoding(proj_dims=64)
+        self.pe_angle_z = FixedPositionalEncoding(proj_dims=self.property_dim)
 
         # Embedding matix for property class label.
         # Compute the number of classes from the input_dims. Note that we
@@ -60,10 +66,15 @@ class BaseAutoregressiveTransformer(nn.Module):
         # angle properties
         self.input_dims = input_dims
         self.n_classes = self.input_dims - 3 - 3 - 1
-        self.fc_class = nn.Linear(self.n_classes, 64, bias=False)
+        self.fc_class = nn.Linear(self.n_classes, self.property_dim, bias=False)
 
         hidden_dims = config.get("hidden_dims", 768)
-        self.fc = nn.Linear(512, hidden_dims)
+        if self.input_embedding_dim != self.property_dim * 8:
+            raise ValueError(
+                "input_embedding_dim must equal property_dim * 8 because ATISS "
+                "concatenates class, xyz position, xyz size and angle features."
+            )
+        self.fc = nn.Linear(self.input_embedding_dim, hidden_dims)
         self.hidden2output = hidden2output
 
     def start_symbol(self, device="cpu"):
@@ -89,6 +100,8 @@ class BaseAutoregressiveTransformer(nn.Module):
         }
 
     def start_symbol_features(self, B, room_mask):
+        if not self.use_room_mask_as_features:
+            return self.start_token_embedding.expand(B, -1, -1)
         room_layout_f = self.fc_room_f(self.feature_extractor(room_mask))
         return room_layout_f[:, None, :]
 
@@ -108,7 +121,8 @@ class AutoregressiveTransformer(BaseAutoregressiveTransformer):
         super().__init__(input_dims, hidden2output, feature_extractor, config)
         # Embedding to be used for the empty/mask token
         self.register_parameter(
-            "empty_token_embedding", nn.Parameter(torch.randn(1, 512))
+            "empty_token_embedding",
+            nn.Parameter(torch.randn(1, self.input_embedding_dim))
         )
 
     def forward(self, sample_params):

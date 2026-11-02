@@ -28,6 +28,18 @@ def compute_perplexity_from_hits(vocab_hits, eps=1e-10):
 
     return perplexity.item(), probs
 
+
+def print_model_parameters(model):
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(
+        f"Model parameters: total={total_params:,} "
+        f"({total_params / 1e6:.2f}M), "
+        f"trainable={trainable_params:,} ({trainable_params / 1e6:.2f}M)",
+        flush=True,
+    )
+
+
 def train_model(
     model: RoomLayoutVQVAE,
     train_loader,
@@ -113,7 +125,7 @@ def train_model(
         print(f"[Train] Epoch {epoch+1}: Loss={avg_train_loss:.4f}, Recon={avg_train_recon:.4f}, VQ={avg_train_vq:.4f}")
         if configs['model']['bottleneck'] == 'vqvae':
             print(f" VQ Usage Rate: {model.quantizer.last_usage_rate*100:.2f}%, Unique Codes: {len(model.quantizer.last_unique_codes) if model.quantizer.last_unique_codes is not None else 0}")
-        elif configs['model']['bottleneck'] == 'residual-vae':
+        elif configs['model']['bottleneck'] in {'residual-vae', 'object-vqvae'}:
             # print(f" VQ Usage Rate: {train_usage_rate*100:.2f}%, perplexity={train_perplexity:.2f}, Unique Codes: {train_used_codes}/{model.token_sequentializer.vocab_size}")
             
             for k in range(len(train_used_codes)):
@@ -169,7 +181,7 @@ def train_model(
         print(f"[Val] Epoch {epoch+1}: Loss={avg_val_loss:.4f}, Recon={avg_val_recon:.4f}, VQ={avg_val_vq:.4f}")
         if configs['model']['bottleneck'] == 'vqvae':
             print(f" VQ Usage Rate: {model.quantizer.last_usage_rate*100:.2f}%, Unique Codes: {len(model.quantizer.last_unique_codes) if model.quantizer.last_unique_codes is not None else 0}")
-        elif configs['model']['bottleneck'] == 'residual-vae':
+        elif configs['model']['bottleneck'] in {'residual-vae', 'object-vqvae'}:
             # print(f" VQ Usage Rate: {val_usage_rate*100:.2f}%, perplexity={val_perplexity:.2f}, Unique Codes: {val_used_codes}/{model.token_sequentializer.vocab_size}")
             for k in range(len(val_used_codes)):
                 print(f"  Codebook {k}: Usage Rate: {val_usage_rate[k]*100:.2f}%, perplexity={val_perplexity[k]:.2f}, Unique Codes: {val_used_codes[k]}/{model.token_sequentializer.vocab_size}")
@@ -291,6 +303,7 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
 
     model = RoomLayoutVQVAE(token_dim=TOKEN_DIM, num_embeddings= NUM_EMBEDDINGS, enc_depth=ENCODER_DEPTH, dec_depth= DECODER_DEPTH, heads=HEADS,configs=config,num_bottleneck=num_bn, num_recon=num_recon, num_classes=dataset_num_class).to(device)
+    print_model_parameters(model)
     criterion = ObjTokenReconstructionLoss(num_categories = dataset_num_class,configs=dataset_config)
 
     # model.load_state_dict(torch.load(f'{save_path}', map_location=device))

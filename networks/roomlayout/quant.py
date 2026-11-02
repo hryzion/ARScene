@@ -324,6 +324,92 @@ class TokenSequentializer(nn.Module):
         for k in range(self.num_codebooks):
             f_hat_list.append(self.embeddings[k](residual_fm_gt[:,:,k])) # B, L, sub_dim
         return torch.stack(f_hat_list, dim=2)
+
+    # ---------------------- next-object ablation only --------------------------#
+    @torch.no_grad()
+    def generate_next_object_fm_gt(self, feature_map: torch.Tensor) -> torch.Tensor:
+        """
+        Quantize the full-resolution object token map directly.
+
+        This is used by the next-object prediction ablation. It keeps the same
+        VQ codebooks as the next-scale model, but does not build a residual
+        multi-scale target sequence.
+
+        Args:
+            feature_map: [B, N, D]
+
+        Returns:
+            token indices: [B, N, num_codebooks]
+        """
+        B, N, D = feature_map.shape
+        f_down = feature_map.reshape(-1, self.num_codebooks, self.sub_dim)
+        idx_list = []
+        for k in range(self.num_codebooks):
+            fk = f_down[:, k]
+            emb = self.embeddings[k]
+            dist = (
+                fk.pow(2).sum(dim=1, keepdim=True)
+                - 2 * fk @ emb.weight.T
+                + emb.weight.pow(2).sum(dim=1)
+            )
+            idx_list.append(torch.argmin(dist, dim=1))
+
+        return torch.stack(idx_list, dim=1).view(B, N, self.num_codebooks)
+
+    def forward_next_object(self, feature_map: torch.Tensor):
+        """
+        Object-level multi-codebook VQ without residual or multi-scale stages.
+
+        This is the tokenizer/VQVAE bottleneck for the next-object ablation. It
+        uses the same multi-codebook shape as the residual tokenizer but learns
+        codebooks directly on full-resolution object features.
+        """
+        if not self.use_codebook:
+            return (
+                feature_map,
+                torch.tensor(0.0, device=feature_map.device),
+                torch.zeros(
+                    self.num_codebooks,
+                    self.vocab_size,
+                    dtype=torch.float,
+                    device=feature_map.device,
+                ),
+            )
+
+        B, N, D = feature_map.shape
+        f_no_grad = feature_map.detach()
+        f_down = f_no_grad.reshape(-1, self.num_codebooks, self.sub_dim)
+        idx_list = []
+        f_hat_list = []
+        vocab_hit = torch.zeros(
+            self.num_codebooks,
+            self.vocab_size,
+            dtype=torch.float,
+            device=feature_map.device,
+        )
+
+        for k in range(self.num_codebooks):
+            fk = f_down[:, k]
+            emb = self.embeddings[k]
+            dist = (
+                fk.pow(2).sum(dim=1, keepdim=True)
+                - 2 * fk @ emb.weight.T
+                + emb.weight.pow(2).sum(dim=1)
+            )
+            idx = torch.argmin(dist, dim=1)
+            idx_list.append(idx)
+            if self.training:
+                self._ema_update_multi(k, fk, idx)
+            vocab_hit[k] += idx.bincount(minlength=self.vocab_size).float()
+            f_hat_list.append(emb(idx))
+
+        f_hat = torch.cat(f_hat_list, dim=-1).view(B, N, D)
+        mean_vq_loss = F.mse_loss(f_hat, f_no_grad) + F.mse_loss(
+            f_hat.data, feature_map
+        ).mul_(self.beta)
+        f_hat = (f_hat.data - f_no_grad).add_(feature_map)
+
+        return f_hat, mean_vq_loss, vocab_hit
     
     def get_fhat_from_residual_fm(self, inference_residual_fm:List[torch.Tensor],padding_mask = None) -> torch.Tensor:
         B = inference_residual_fm[0].shape[0]

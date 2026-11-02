@@ -1,0 +1,67 @@
+seed: 0
+
+dataset:
+  dataset_dir: ./datasets/atiss_livingroom_wo_lat
+  filter_fn: livingroom
+  padded_length: 27
+  num_class: 31
+  num_predicates: 10
+
+model:
+  size_name: d10_a768_h8
+  text_encoder: openai/clip-vit-base-patch32
+  use_objfeat: false
+  edge_weight: 10.0
+  common:
+    attn_dim: 768
+    t_dim: 128
+    edge_attn_dim: 256
+    n_heads: 8
+    n_layers: 10
+    dropout: 0.1
+    gated_ff: true
+    ada_norm: true
+  sg:
+    use_e_cross_attn: false
+    concat_global_condition: true
+    use_positional_encoding: true
+    num_objfeat_embeds: 64
+    objfeat_dim: 512
+    objfeat_pool_layers: 2
+    objfeat_out_layers: 2
+  sg2sc:
+    objfeat_dim: 1280
+
+training:
+  epochs: 5000
+  steps_per_epoch: 500
+  batch_size: 64
+  num_workers: 4
+  save_frequency: 50
+  optimizer:
+    name: adamw
+    lr: 0.0001
+    weight_decay: 0.02
+  loss_weights:
+    vb_x: 1.0
+    vb_e: 1.0
+    vb_o: 0.0
+    pos_mse: 1.0
+    size_mse: 1.0
+    angle_mse: 1.0
+
+validation:
+  batch_size: 64
+  frequency: 100
+
+save:
+  sg_save_folder: ./pretrained/instructscene_sg_livingroom/
+  sg2sc_save_folder: ./pretrained/instructscene_sg2sc_livingroom/
+  output_folder: ./pretrained/instructscene_livingroom_results/
+
+test:
+  batch_size: 16
+  sg_cfg_scale: 0
+  sg_skip_step: 0
+  sg2sc_timesteps: 100
+  sg2sc_cfg_scale: 1.0

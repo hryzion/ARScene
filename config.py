@@ -3,12 +3,18 @@ import argparse
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str, default='./training_configs/residual_config.yaml', help='Path to the config file')
+    parser.add_argument('--sg_config', type=str, default=None, help='Optional SG config for InstructScene test')
+    parser.add_argument('--sg2sc_config', type=str, default=None, help='Optional SG2SC config for InstructScene test')
     parser.add_argument('--exp', type=int, default=0)
     parser.add_argument('--cuda' ,type=int, default=0)
     parser.add_argument('--wandb', action='store_true')
+    parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--resume_checkpoint', type=str, default=None)
     parser.add_argument('--tag', type=str, default="latest")
     parser.add_argument('--scene', type=str, default="none")
     parser.add_argument('--num', type=int, default=1000)
+    parser.add_argument('--test_mode', type=str, default="description", choices=("description", "sg"))
+    parser.add_argument('--use_gt_sg', action='store_true')
     args = parser.parse_args()
     return args
 

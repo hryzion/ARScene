@@ -45,6 +45,7 @@ def main():
 
     super_parameters = config["super_parameters"]
     batch_size = int(super_parameters.get("test_batch_size", 16))
+    num_workers = int(super_parameters.get("num_workers", 8))
 
     model_config = config["network"]
     network_type = get_midiffusion_network_type(model_config)
@@ -97,6 +98,9 @@ def main():
         batch_size=batch_size,
         shuffle=True,
         collate_fn=dataset_class.collate_fn_parallel_transformer,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=num_workers > 0,
     )
 
     train_stats_file = resolve_train_stats_file(
@@ -106,7 +110,13 @@ def main():
         config, dataset_num_class, train_stats_file, device
     )
     midiffusion.eval()
-    midiffusion.load_state_dict(torch.load(save_path, map_location=device))
+    try:
+        checkpoint = torch.load(save_path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(save_path, map_location=device)
+    if isinstance(checkpoint, dict) and "model" in checkpoint:
+        checkpoint = checkpoint["model"]
+    midiffusion.load_state_dict(checkpoint)
 
     total_time = 0.0
     total_scenes = 0

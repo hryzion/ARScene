@@ -259,6 +259,35 @@ def sample_multicodebook_topk_topp(logits_BLKV: torch.Tensor, top_k: int = 0, to
 
     return z # B, L, K
 
+
+def sample_topk_topp(logits, top_k: int = 0, top_p: float = 0.0, rng=None, num_samples=1):
+    if logits.dim() == 2:
+        logits_BLV = logits[:, None, :]
+    elif logits.dim() == 3:
+        logits_BLV = logits
+    else:
+        raise ValueError(f'expected logits as (B,V) or (B,L,V), got {tuple(logits.shape)}')
+
+    B, L, V = logits_BLV.shape
+    logits_BLV = logits_BLV.clone()
+
+    if top_k > 0:
+        kth = logits_BLV.topk(top_k, dim=-1).values[..., -1:]
+        logits_BLV = logits_BLV.masked_fill(logits_BLV < kth, -torch.inf)
+
+    if top_p > 0:
+        sorted_logits, sorted_idx = logits_BLV.sort(descending=False)
+        sorted_idx_to_remove = sorted_logits.softmax(dim=-1).cumsum_(dim=-1) <= (1 - top_p)
+        sorted_idx_to_remove[..., -1:] = False
+        logits_BLV.masked_fill_(sorted_idx_to_remove.scatter(sorted_idx.ndim - 1, sorted_idx, sorted_idx_to_remove), -torch.inf)
+
+    replacement = num_samples >= 0
+    num_samples = abs(num_samples)
+    probs = logits_BLV.softmax(dim=-1)
+    z = torch.multinomial(probs.view(-1, V), num_samples=num_samples, replacement=replacement, generator=rng).view(B, L)
+    return z if logits.dim() == 3 else z[:, 0]
+
+
 def sample_single_codebook_topk_topp(
     logits_BLV: torch.Tensor,
     top_k: int = 0,

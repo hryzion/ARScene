@@ -630,22 +630,141 @@ class ThreeDFrontDatasetMiDiffusion(ThreeDFrontDatasetDiffuScene):
         num_cate=31,
         n_fpbpn=256,
     ):
-        super().__init__(npz_dir, transform, split, padded_length, num_cate)
+        Dataset.__init__(self)
+        self.npz_dir = os.path.join(npz_dir, split)
+        self.file_list = [f for f in os.listdir(self.npz_dir)]
+        self.num_cate = num_cate
+        self.feature_size = self.num_cate + 2 + 3 + 3 + 2
+        self.transform = transform
+        self.padded_length = padded_length
         self.n_fpbpn = n_fpbpn
+        self.data_list = []
+        self.shape_list = []
+        self.fpbpn_list = []
+        for fname in self.file_list:
+            npz_path = os.path.join(self.npz_dir, fname, 'room_data.npz')
+            shape_path = os.path.join(self.npz_dir, fname, 'room_shape.npz')
+            data = np.load(npz_path, allow_pickle=True)
+            shape_data = np.load(shape_path, allow_pickle=True)
+            room_shape_polygon = shape_data['room_shape']
+            self.data_list.append(data)
+            self.shape_list.append(room_shape_polygon)
+            self.fpbpn_list.append(
+                sample_floor_plan_boundary_points_normals(
+                    room_shape_polygon,
+                    n_points=self.n_fpbpn,
+                )
+            )
 
     def __getitem__(self, idx):
-        sample = super().__getitem__(idx)
-        sample['fpbpn'] = sample_floor_plan_boundary_points_normals(
-            sample['room_shape_poly'],
-            n_points=self.n_fpbpn,
-        )
-        return sample
+        data = self.data_list[idx]
+        room_shape_polygon = self.shape_list[idx]
+        room_type = data["room_type"]
+        obj_tokens = data["obj_tokens"].astype(np.float32)
+
+        if isinstance(room_type, str):
+            room_type = self.encode_room_type(room_type)
+
+        obj_tokens = torch.from_numpy(obj_tokens)
+        if self.transform:
+            obj_tokens = self.transform(obj_tokens)
+
+        device = obj_tokens.device
+        end_label = torch.zeros(self.num_cate + 2, device=device)
+        end_label[-1] = 1
+        end_t = torch.zeros(3, device=device)
+        end_s = torch.zeros(3, device=device)
+        end_a = torch.zeros(1, device=device)
+        end_token = torch.cat([end_label, end_t, end_s, end_a], dim=0)
+
+        if self.padded_length is not None:
+            if obj_tokens.shape[0] > self.padded_length:
+                raise ValueError(
+                    f"Object tokens length {obj_tokens.shape[0]} exceeds "
+                    f"padded_length {self.padded_length}"
+                )
+            padding_size = self.padded_length - obj_tokens.shape[0]
+            if padding_size > 0:
+                padding = end_token.unsqueeze(0).repeat(padding_size, 1)
+                obj_tokens = torch.cat([obj_tokens, padding], dim=0)
+                attention_mask = torch.cat([
+                    torch.zeros(
+                        obj_tokens.shape[0] - padding_size,
+                        dtype=torch.bool,
+                        device=device,
+                    ),
+                    torch.ones(padding_size, dtype=torch.bool, device=device),
+                ], dim=0).bool()
+            else:
+                attention_mask = torch.zeros(
+                    obj_tokens.shape[0], dtype=torch.bool, device=device
+                )
+        else:
+            attention_mask = torch.zeros(
+                obj_tokens.shape[0], dtype=torch.bool, device=device
+            )
+
+        class_labels = obj_tokens[:, :self.num_cate+2]
+        translations = obj_tokens[:, self.num_cate+2:self.num_cate+5]
+        sizes = obj_tokens[:, self.num_cate+5:self.num_cate+8]
+        angles = obj_tokens[:, self.num_cate+8:self.num_cate+9]
+
+        name = self.file_list[idx].split('_')[:2]
+        name = '_'.join(name)
+        return {
+            'room_name': name,
+            'room_type': room_type,
+            'obj_tokens': obj_tokens,
+            'text_desc': str(data['description']),
+            'class_labels': class_labels,
+            'attention_mask': attention_mask,
+            'translations': translations,
+            'sizes': sizes,
+            'angles': angles,
+            'length': obj_tokens.shape[0],
+            'room_shape_poly': room_shape_polygon,
+            'fpbpn': self.fpbpn_list[idx],
+        }
 
     @staticmethod
     def collate_fn_parallel_transformer(samples):
-        batch = ThreeDFrontDatasetDiffuScene.collate_fn_parallel_transformer(samples)
-        batch['fpbpn'] = torch.stack([sample['fpbpn'] for sample in samples], dim=0)
-        return batch
+        room_types = [sample['room_type'] for sample in samples]
+        room_descs = [sample['text_desc'] for sample in samples]
+        room_shape_polygons = [sample['room_shape_poly'] for sample in samples]
+        length = torch.Tensor([sample['length'] for sample in samples])
+
+        padded_obj_tokens = torch.stack(
+            [sample['obj_tokens'] for sample in samples], dim=0
+        )
+        class_labels = torch.stack(
+            [sample['class_labels'] for sample in samples], dim=0
+        )
+        translations = torch.stack(
+            [sample['translations'] for sample in samples], dim=0
+        )
+        sizes = torch.stack([sample['sizes'] for sample in samples], dim=0)
+        angles = torch.stack([sample['angles'] for sample in samples], dim=0)
+        angles = torch.cat([torch.cos(angles), torch.sin(angles)], dim=-1)
+        attention_mask_batch = torch.stack(
+            [sample['attention_mask'] for sample in samples], dim=0
+        )
+        fpbpn = torch.stack([sample['fpbpn'] for sample in samples], dim=0)
+
+        return {
+            'room_name': [sample['room_name'] for sample in samples],
+            'room_type': room_types,
+            'lengths': length,
+            'room_layout': torch.empty(len(samples), 0),
+            'description': room_descs,
+            'obj_tokens': padded_obj_tokens,
+            'attention_mask': attention_mask_batch,
+            'class_labels': class_labels,
+            'translations': translations,
+            'sizes': sizes,
+            'angles': angles,
+            'room_shape_polygons': room_shape_polygons,
+            'fpbpn': fpbpn,
+        }
 
 class ThreeDFrontDatasetPhyScene(ThreeDFrontDataset):
     def __init__(self, npz_dir, transform=None, split='train', padded_length=None, num_cate=31):

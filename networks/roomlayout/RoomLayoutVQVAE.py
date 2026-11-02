@@ -344,6 +344,9 @@ class RoomLayoutVQVAE(nn.Module):
         elif self.configs['model']['bottleneck'] == 'residual-vae':
             z_q, vq_loss, vocab_hits = self.token_sequentializer(z)
             indices = vocab_hits
+        elif self.configs['model']['bottleneck'] == 'object-vqvae':
+            z_q, vq_loss, vocab_hits = self.token_sequentializer.forward_next_object(z)
+            indices = vocab_hits
         else:
             raise NotImplementedError(f"Unknown bottleneck type: {self.configs['model']['bottleneck']}")
 
@@ -378,4 +381,3 @@ class RoomLayoutVQVAE(nn.Module):
         hidden_lat, mask_logit = self.decoder(f_hat) 
         recon = self.hidden2out.decode_from_hidden(hidden_lat)
         return recon, mask_logit
-

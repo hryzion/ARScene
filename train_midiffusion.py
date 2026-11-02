@@ -1,7 +1,10 @@
 import copy
 import json
 import os
+import random
+import signal
 
+import numpy as np
 import torch
 import yaml
 from torch.utils.data import DataLoader
@@ -144,6 +147,82 @@ def get_dataset_kwargs(config):
     return {}
 
 
+def checkpoint_path_from_save_path(save_path):
+    return f"{save_path[:-4]}_latest.ckpt"
+
+
+def move_optimizer_state_to_device(optimizer, device):
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if hasattr(value, "to"):
+                state[key] = value.to(device)
+
+
+def get_rng_state():
+    state = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def set_rng_state(state):
+    if not state:
+        return
+    if "python" in state:
+        random.setstate(state["python"])
+    if "numpy" in state:
+        np.random.set_state(state["numpy"])
+    if "torch" in state:
+        torch.set_rng_state(state["torch"])
+    if "cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
+def save_training_checkpoint(
+    path,
+    model,
+    optimizer,
+    epoch,
+    iterations,
+    configs,
+):
+    checkpoint = {
+        "format": "arscene_midiffusion_checkpoint_v1",
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
+        "iterations": iterations,
+        "config": configs,
+        "rng_state": get_rng_state(),
+    }
+    torch.save(checkpoint, path)
+
+
+def load_training_checkpoint(path, model, optimizer, device):
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(path, map_location=device)
+    if isinstance(checkpoint, dict) and "model" in checkpoint:
+        model.load_state_dict(checkpoint["model"])
+        if optimizer is not None and "optimizer" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            move_optimizer_state_to_device(optimizer, device)
+        set_rng_state(checkpoint.get("rng_state"))
+        return int(checkpoint.get("epoch", -1)) + 1, int(checkpoint.get("iterations", 0))
+
+    model.load_state_dict(checkpoint)
+    return 0, 0
+
+
+def raise_keyboard_interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
 def train_model(
     model,
     train_loader,
@@ -154,7 +233,29 @@ def train_model(
     configs=None,
     use_wandb=False,
     tag="bedroom",
+    resume_checkpoint=None,
 ):
+    training_config = configs["training"]
+    lr_scheduler = schedule_factory(training_config)
+    optimizer = optimizer_factory(
+        training_config, filter(lambda p: p.requires_grad, model.parameters())
+    )
+    max_grad_norm = training_config.get("max_grad_norm", 10)
+
+    start_epoch = 0
+    iterations = 0
+    if resume_checkpoint is not None:
+        if not os.path.exists(resume_checkpoint):
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_checkpoint}")
+        start_epoch, iterations = load_training_checkpoint(
+            resume_checkpoint, model, optimizer, device
+        )
+        print(
+            f"[ INFO ] Resumed from {resume_checkpoint} "
+            f"(start_epoch={start_epoch + 1}, iterations={iterations})",
+            flush=True,
+        )
+
     if use_wandb:
         WandB.instance().init(
             configs,
@@ -165,40 +266,70 @@ def train_model(
             log_frequency=10,
         )
 
-    training_config = configs["training"]
-    lr_scheduler = schedule_factory(training_config)
-    optimizer = optimizer_factory(
-        training_config, filter(lambda p: p.requires_grad, model.parameters())
-    )
-    max_grad_norm = training_config.get("max_grad_norm", 10)
-
-    iterations = 0
-    for epoch in range(num_epochs):
-        adjust_learning_rate(lr_scheduler, optimizer, iterations)
-        model.train()
-        for b, sample in enumerate(train_loader):
-            iterations += 1
-            move_all_thing_to(sample, device)
-            loss = train_on_batch(
-                model,
-                optimizer=optimizer,
-                sample_params=sample,
-                max_grad_norm=max_grad_norm,
-            )
-            StatsLogger.instance().print_progress(epoch + 1, b + 1, loss)
-        StatsLogger.instance().clear()
-
-        model.eval()
-        with torch.no_grad():
-            for b, sample in enumerate(val_loader):
+    previous_sigterm_handler = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, raise_keyboard_interrupt)
+    try:
+        for epoch in range(start_epoch, num_epochs):
+            adjust_learning_rate(lr_scheduler, optimizer, iterations)
+            model.train()
+            for b, sample in enumerate(train_loader):
+                iterations += 1
                 move_all_thing_to(sample, device)
-                loss = validate_on_batch(model, sample_params=sample)
-                StatsLogger.instance().print_progress(-1, b + 1, loss)
-        StatsLogger.instance().clear()
+                loss = train_on_batch(
+                    model,
+                    optimizer=optimizer,
+                    sample_params=sample,
+                    max_grad_norm=max_grad_norm,
+                )
+                StatsLogger.instance().print_progress(epoch + 1, b + 1, loss)
+            StatsLogger.instance().clear()
 
-        if epoch % 200 == 0:
-            torch.save(model.state_dict(), f"{save_path[:-4]}_{epoch}.pth")
+            model.eval()
+            with torch.no_grad():
+                for b, sample in enumerate(val_loader):
+                    move_all_thing_to(sample, device)
+                    loss = validate_on_batch(model, sample_params=sample)
+                    StatsLogger.instance().print_progress(-1, b + 1, loss)
+            StatsLogger.instance().clear()
+
+            if epoch % 200 == 0:
+                torch.save(model.state_dict(), f"{save_path[:-4]}_{epoch}.pth")
+                save_training_checkpoint(
+                    f"{save_path[:-4]}_{epoch}.ckpt",
+                    model,
+                    optimizer,
+                    epoch,
+                    iterations,
+                    configs,
+                )
+            torch.save(model.state_dict(), f"{save_path[:-4]}_latest.pth")
+            save_training_checkpoint(
+                checkpoint_path_from_save_path(save_path),
+                model,
+                optimizer,
+                epoch,
+                iterations,
+                configs,
+            )
+    except KeyboardInterrupt:
+        interrupted_epoch = max(start_epoch - 1, locals().get("epoch", start_epoch) - 1)
+        save_training_checkpoint(
+            checkpoint_path_from_save_path(save_path),
+            model,
+            optimizer,
+            interrupted_epoch,
+            iterations,
+            configs,
+        )
         torch.save(model.state_dict(), f"{save_path[:-4]}_latest.pth")
+        print(
+            f"\n[ INFO ] Interrupted. Saved checkpoint to "
+            f"{checkpoint_path_from_save_path(save_path)}",
+            flush=True,
+        )
+        raise
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm_handler)
 
 
 if __name__ == "__main__":
@@ -209,6 +340,7 @@ if __name__ == "__main__":
     super_parameters = config["super_parameters"]
     batch_size = int(super_parameters.get("batch_size", 64))
     num_epochs = int(super_parameters.get("epochs", 200))
+    num_workers = int(super_parameters.get("num_workers", 8))
 
     model_config = config["network"]
     network_type = get_midiffusion_network_type(model_config)
@@ -277,12 +409,18 @@ if __name__ == "__main__":
         batch_size=batch_size,
         shuffle=True,
         collate_fn=dataset_class.collate_fn_parallel_transformer,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=num_workers > 0,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         collate_fn=dataset_class.collate_fn_parallel_transformer,
+        num_workers=num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=num_workers > 0,
     )
 
     train_stats_file = resolve_train_stats_file(
@@ -295,6 +433,10 @@ if __name__ == "__main__":
     total_p = count_trainable_params(midiffusion) / 1_000_000
     print(f"[ INFO ] Total Training Parameters: {total_p:.2f}M")
 
+    resume_checkpoint = args.resume_checkpoint
+    if args.resume and resume_checkpoint is None:
+        resume_checkpoint = checkpoint_path_from_save_path(save_path)
+
     train_model(
         model=midiffusion,
         train_loader=train_loader,
@@ -305,4 +447,5 @@ if __name__ == "__main__":
         configs=config,
         use_wandb=args.wandb,
         tag=tag,
+        resume_checkpoint=resume_checkpoint,
     )

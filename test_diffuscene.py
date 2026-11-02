@@ -71,25 +71,38 @@ def main():
 
 
     obj_feat = 64 if dataset_config['use_objlat'] else 0
-    normalizer = SceneTokenNormalizer(category_dim=dataset_num_class+2,obj_feat=obj_feat, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True))
+    normalizer = SceneTokenNormalizer(category_dim=dataset_num_class+2,obj_feat=obj_feat, rotation_mode='sincos',use_objlat=dataset_config.get('use_objlat',True), atiss=True)
     if os.path.exists(f'{dataset_dir}/normalizer_stats_atiss.json'):
         normalizer.load(f'{dataset_dir}/normalizer_stats_atiss.json')
     else:
         raise FileNotFoundError(f"Normalizer stats file not found at {dataset_dir}. Please preprocess the dataset first.")
+    print(
+        "[INFO] DiffuScene room_mask_condition="
+        f"{model_config.get('room_mask_condition', True)}; "
+        f"text_condition={model_config.get('text_condition', False)}; "
+        f"normalize_rotation={normalizer._infer_atiss_normalize_rotation()}",
+        flush=True,
+    )
 
     test_dataset = load_test_dataset(dataset_dir,dataset_padded_length,dataset_num_class)
     test_dataset.transform = normalizer.transform_atiss
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, collate_fn=ThreeDFrontDatasetDiffuScene.collate_fn_parallel_transformer)
 
-    feat_extractor = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1).to(device)
+    feat_extractor = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
     feat_extractor.fc = nn.Identity()  # 去掉最后的分类层
     
     diffuscene = DiffusionSceneLayout_DDPM(
         dataset_num_class+2, feat_extractor, config["network"] # add 2 empty classes
-    ).to(device)
+    )
     diffuscene.eval()
 
-    diffuscene.load_state_dict(torch.load(f"{save_path}", map_location=device))
+    try:
+        state_dict = torch.load(f"{save_path}", map_location="cpu", weights_only=True)
+    except TypeError:
+        state_dict = torch.load(f"{save_path}", map_location="cpu")
+    diffuscene.load_state_dict(state_dict)
+    diffuscene = diffuscene.to(device)
+    diffuscene.eval()
 
     total_time = 0.0
     total_scenes = 0
@@ -109,7 +122,8 @@ def main():
 
             text_input = text_desc
 
-            torch.cuda.synchronize()
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
             start_time = time.time()
 
             infer_room = diffuscene.sample(
@@ -122,7 +136,8 @@ def main():
 
             )
             
-            torch.cuda.synchronize()
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
             end_time = time.time()
 
             batch_time = end_time - start_time
@@ -190,7 +205,8 @@ def main():
             # 这里调用可视化函数，可以传入输入和输出
             visualize_result(decoded_infer, raw_data=decoded_raw, room_name=room_name, save_dir=f'{save_folder}/topdown_infer/{args.tag}')
 
-            torch.cuda.synchronize()
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
             end_post_processing = time.time()
             post_processing_time = end_post_processing - end_time
             

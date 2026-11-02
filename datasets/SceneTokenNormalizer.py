@@ -2,6 +2,9 @@ import torch
 from torch.utils.data import DataLoader
 import json
 import math
+import inspect
+import os
+import sys
 from datasets.Threed_front_dataset import ThreeDFrontDataset
 
 class SceneTokenNormalizer:
@@ -18,6 +21,7 @@ class SceneTokenNormalizer:
         
         self.use_objlat = use_objlat
         self.stats = {}
+        self._auto_atiss_normalize_rotation = None
 
         self.slices = {
             'translate': slice(self.category_dim, self.category_dim + 3),
@@ -38,7 +42,43 @@ class SceneTokenNormalizer:
                 'rotation': slice(self.category_dim + 6, self.category_dim + 7),
             }
 
-   
+    def _infer_atiss_normalize_rotation(self):
+        if self._auto_atiss_normalize_rotation is not None:
+            return self._auto_atiss_normalize_rotation
+
+        script_name = os.path.basename(sys.argv[0]).lower()
+        ar_gpt_scripts = {
+            'train_encoder.py',
+            'test_vis.py',
+            'train_ar.py',
+            'test_ar.py',
+            'intermediate_ar.py',
+            'train_gpt.py',
+            'test_gpt.py',
+            'train_gpt_next_object.py',
+            'test_gpt_next_object.py',
+            'train_atiss.py',
+            'test_atiss.py',
+        }
+        normalize_rotation = script_name in ar_gpt_scripts
+
+        if not normalize_rotation:
+            for frame_info in inspect.stack():
+                filename = os.path.basename(frame_info.filename).lower()
+                if filename in ar_gpt_scripts:
+                    normalize_rotation = True
+                    break
+
+        self._auto_atiss_normalize_rotation = normalize_rotation
+        return normalize_rotation
+
+    def _should_normalize_atiss_key(self, key, normalize_rotation):
+        if key == 'latent':
+            return False
+        if key == 'rotation' and not normalize_rotation:
+            return False
+        return True
+
 
     def fit(self, dataset, mask_key='attention_mask', batch_size=8):
         """统计训练集的 mean/std，排除 padding"""
@@ -150,7 +190,12 @@ class SceneTokenNormalizer:
 
 
     def fit_atiss(self, dataset, mask_key='attention_mask', batch_size=8):
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=ThreeDFrontDataset.collate_fn_parallel_transformer)
+        collate_fn = getattr(
+            dataset.__class__,
+            "collate_fn_parallel_transformer",
+            ThreeDFrontDataset.collate_fn_parallel_transformer,
+        )
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn)
         slices = self.slices
         mins, maxs = {}, {}
         for batch in loader:
@@ -192,8 +237,11 @@ class SceneTokenNormalizer:
                     'max': maxs[key]
                 }
 
-    def transform_atiss(self, obj_tokens):
+    def transform_atiss(self, obj_tokens, normalize_rotation=None):
         """标准化 bbox/translate/scale，rotation → sincos"""
+        if normalize_rotation is None:
+            normalize_rotation = self._infer_atiss_normalize_rotation()
+
         original_shape = obj_tokens.shape
         if obj_tokens.dim() == 3:
             B, N, D = original_shape
@@ -202,10 +250,8 @@ class SceneTokenNormalizer:
         slices =self.slices
         normalized = obj_tokens.clone()
         for key, s in slices.items():
-            if key == 'latent':
+            if not self._should_normalize_atiss_key(key, normalize_rotation):
                 continue
-            # if key == 'rotation':
-            #     continue
             min_s, max_s = self.stats[key]['min'].to(obj_tokens.device), self.stats[key]['max'].to(obj_tokens.device)
             # print(obj_tokens.shape)
             normalized[:, s] = self.normalize(normalized[:, s], min_s, max_s)
@@ -216,7 +262,10 @@ class SceneTokenNormalizer:
 
         return normalized
     
-    def invert_transform_atiss(self, obj_tokens):
+    def invert_transform_atiss(self, obj_tokens, normalize_rotation=None):
+        if normalize_rotation is None:
+            normalize_rotation = self._infer_atiss_normalize_rotation()
+
         original_shape = obj_tokens.shape
         if obj_tokens.dim() == 3:
             B, N, D = original_shape
@@ -226,10 +275,8 @@ class SceneTokenNormalizer:
         slices = self.slices
         denorm = obj_tokens.clone()
         for key, s in slices.items():
-            if key =='latent':
+            if not self._should_normalize_atiss_key(key, normalize_rotation):
                 continue
-            # if key == 'rotation': ## if gpt, comment it
-            #     continue
             min_s, max_s = self.stats[key]['min'].to(obj_tokens.device), self.stats[key]['max'].to(obj_tokens.device)
             denorm[:, s] = self.denormalize(denorm[:, s], min_s, max_s)
         if len(original_shape) == 3:

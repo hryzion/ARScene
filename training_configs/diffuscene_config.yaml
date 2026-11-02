@@ -7,14 +7,15 @@ dataset:
   num_class: 31
 
 super_parameters:
-  epochs: 3000
+  epochs: 1000
+  steps_per_epoch: 500
   batch_size: 128
   learning_rate: 0.0002
   weight_decay: 0.00001
   cuda: 0
 
 save:
-  save_folder: ./pretrained/diffuscene/
+  save_folder: ./pretrained/diffuscene_room/
 
 
 network: 
@@ -27,10 +28,11 @@ network:
   size_dim: 3
   angle_dim: 2
   objfeat_dim: 0
+  room_mask_condition: true
   learnable_embedding: true
   instance_condition: true
   instance_emb_dim: 128
-  latent_dim: 64
+  latent_dim: 512
   sample_num_points: 27 # max_length 
   diffusion_kwargs:
         schedule_type: 'linear'
@@ -38,12 +40,12 @@ network:
         beta_end: 0.02
         time_num: 1000 
         loss_type: 'mse'
-        model_mean_type: 'v' # eps x0
+        model_mean_type: 'eps' # eps x0
         model_var_type: 'fixedsmall'
         loss_separate: true
         # calculate iou loss
         loss_iou: true
-        train_stats_file: "/mnt/disk-1/zhx24/public_code/DiffuScene/datasets/3d_front_processed/livingrooms_objfeats_32_64/dataset_stats.txt"
+        train_stats_file: null
   net_kwargs:
         dim: 512
         dim_mults: [1, 1, 1, 1]
@@ -52,7 +54,7 @@ network:
         class_dim: 33
         angle_dim: 2
         objfeat_dim: 0
-        context_dim: 64
+        context_dim: 512
         instanclass_dim: 128 
         seperate_all: true  
 
@@ -61,7 +63,7 @@ training:
     epochs: 60000
     steps_per_epoch: 500
     batch_size: 128
-    save_frequency: 2000
+    save_frequency: 40
     max_grad_norm: 10
     # optimizer
     optimizer: Adam
@@ -71,6 +73,11 @@ training:
     lr: 0.0002
     lr_step: 10000
     lr_decay: 0.5
+
+validation:
+    splits: ["test"]
+    frequency: 10
+    batch_size: 128
 
 
 logger:

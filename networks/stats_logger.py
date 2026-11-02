@@ -22,12 +22,18 @@ class AverageAggregator(object):
 
     @property
     def value(self):
+        if self._count == 0:
+            return 0
         return self._value / self._count
 
     @value.setter
     def value(self, val):
         self._value += val
         self._count += 1
+
+    def update(self, value, count=1):
+        self._value += value
+        self._count += count
 
 
 class StatsLogger(object):

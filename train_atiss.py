@@ -4,6 +4,7 @@ from networks.scenelatent import hidden2output_layer, optimizer_factory
 from networks.stats_logger import StatsLogger, WandB
 from datasets.Threed_front_dataset import ThreeDFrontDatasetRdm
 from datasets.SceneTokenNormalizer import SceneTokenNormalizer
+from itertools import cycle
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -20,6 +21,44 @@ def move_all_thing_to(sample_param:dict, device):
             sample_param[k] = v.to(device)
 
 
+def checkpoint_path(save_path):
+    return f"{save_path[:-4]}_latest.ckpt"
+
+
+def atiss_size_tag(model_config):
+    return model_config.get("size_name")
+
+
+def save_checkpoint(path, model, optimizer, epoch, global_step, configs):
+    torch.save(
+        {
+            "format": "arscene_atiss_v1",
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "epoch": epoch,
+            "global_step": global_step,
+            "config": configs,
+        },
+        path,
+    )
+
+
+def load_checkpoint(path, model, optimizer, device):
+    try:
+        ckpt = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        ckpt = torch.load(path, map_location=device)
+
+    if isinstance(ckpt, dict) and "model" in ckpt:
+        model.load_state_dict(ckpt["model"])
+        if optimizer is not None and "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        return int(ckpt.get("epoch", -1)) + 1, int(ckpt.get("global_step", 0))
+
+    model.load_state_dict(ckpt)
+    return 0, 0
+
+
 
 def train_model(
     model : AutoregressiveTransformer,
@@ -32,7 +71,9 @@ def train_model(
     criterion = None,
     configs = None,
     use_wandb = False,
-    tag = "bedroom"
+    tag = "bedroom",
+    steps_per_epoch=500,
+    resume_checkpoint=None,
 ):  
     
     if use_wandb:
@@ -52,27 +93,38 @@ def train_model(
 
     train_loss_recorder = []
     val_loss_recorder = []
+    start_epoch = 0
+    global_step = 0
+    if resume_checkpoint is not None:
+        start_epoch, global_step = load_checkpoint(resume_checkpoint, model, optimizer, device)
+        print(f"[INFO] Resumed from {resume_checkpoint} at epoch {start_epoch + 1}, step {global_step}", flush=True)
+    val_frequency = int(configs.get("validation", {}).get("frequency", 10))
+    save_frequency = int(configs.get("training", {}).get("save_frequency", 40))
 
 
-    for epoch in range(num_epochs):
+    for epoch in range(start_epoch, num_epochs):
         model.train()
-        for b, sample in enumerate(train_loader):
+        for b, sample in zip(range(steps_per_epoch), cycle(train_loader)):
             move_all_thing_to(sample, device)
             loss = train_on_batch(model, optimizer=optimizer, sample_params=sample, config=None)
             StatsLogger.instance().print_progress(epoch+1, b+1, loss)
+            global_step += 1
         StatsLogger.instance().clear()
 
-        model.eval()
-        with torch.no_grad():
-            for b,sample in enumerate(val_loader):
-                move_all_thing_to(sample, device)
-                loss = validate_on_batch(model, sample_params=sample,config=None)
-                StatsLogger.instance().print_progress(-1, b+1, loss)
-            StatsLogger.instance().clear()
+        if val_frequency > 0 and (epoch + 1) % val_frequency == 0:
+            model.eval()
+            with torch.no_grad():
+                for b,sample in enumerate(val_loader):
+                    move_all_thing_to(sample, device)
+                    loss = validate_on_batch(model, sample_params=sample,config=None)
+                    StatsLogger.instance().print_progress(-1, b+1, loss)
+                StatsLogger.instance().clear()
 
-        if epoch % 200 == 0:
+        if save_frequency > 0 and (epoch + 1) % save_frequency == 0:
             torch.save(model.state_dict(), f'{save_path[:-4]}_{epoch}.pth')
+            save_checkpoint(f'{save_path[:-4]}_{epoch}.ckpt', model, optimizer, epoch, global_step, configs)
         torch.save(model.state_dict(), f'{save_path[:-4]}_latest.pth')
+        save_checkpoint(checkpoint_path(save_path), model, optimizer, epoch, global_step, configs)
         
     return train_loss_recorder, val_loss_recorder
 
@@ -90,6 +142,7 @@ if __name__ == "__main__":
     super_parameters = config['super_parameters']
     BATCH_SIZE = int(super_parameters.get('batch_size', 64))
     NUM_EPOCHS = int(super_parameters.get('epochs', 200))
+    STEPS_PER_EPOCH = int(super_parameters.get('steps_per_epoch', config.get("training", {}).get("steps_per_epoch", 500)))
     LEARNING_RATE = float(super_parameters.get('learning_rate', 1e-4))
 
 
@@ -111,6 +164,9 @@ if __name__ == "__main__":
     tag = f'{model_config["type"]}_{dataset_config.get("filter_fn","all")}'
     if not dataset_config.get('use_objlat'):
         tag += '_wo_lat'
+    size_tag = atiss_size_tag(model_config)
+    if size_tag:
+        tag += f'_{size_tag}'
 
     # --------------------- save -----------------------
 
@@ -140,6 +196,12 @@ if __name__ == "__main__":
         # normalizer.fit(train_dataset, mask_key='attention_mask', batch_size=BATCH_SIZE)
         normalizer.fit_atiss(train_dataset, mask_key='attention_mask', batch_size=BATCH_SIZE)
         normalizer.save(f'{dataset_dir}/normalizer_stats_atiss.json')
+    print(
+        "[INFO] ATISS use_room_mask_as_features="
+        f"{model_config.get('use_room_mask_as_features', True)}; "
+        f"normalize_rotation={normalizer._infer_atiss_normalize_rotation()}",
+        flush=True,
+    )
 
     
     train_dataset.transform = normalizer.transform_atiss
@@ -163,6 +225,9 @@ if __name__ == "__main__":
     total_p = count_trainable_params(atiss)/1_000_000
     print(f"[ INFO ] Total Training Parameters: {total_p:.2f}M")
 
+    resume_checkpoint = args.resume_checkpoint
+    if args.resume and resume_checkpoint is None:
+        resume_checkpoint = checkpoint_path(save_path)
 
     train_model(
         model=atiss,
@@ -175,6 +240,7 @@ if __name__ == "__main__":
         criterion=None,
         configs = config,
         use_wandb = args.wandb,
-        tag=tag
+        tag=tag,
+        steps_per_epoch=STEPS_PER_EPOCH,
+        resume_checkpoint=resume_checkpoint,
     )
-

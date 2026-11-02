@@ -41,7 +41,7 @@ def main():
     save_path = os.path.join(save_folder, f"{model_config['type']}.pth")
 
 
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else 'cpu')
 
     dataset_config = config.get('dataset', {})
     dataset_dir = dataset_config.get('dataset_dir','./datasets/processed')
@@ -93,7 +93,7 @@ def main():
             denormalized_recon = normalizer.invert_transform_atiss(recon)
             denormalized_obj_tokens = normalizer.invert_transform_atiss(obj_tokens)
             decoded_recon = decode_obj_tokens_with_mask(denormalized_recon, attention_mask, use_objlat=dataset_config['use_objlat'], num_classes=dataset_num_class)
-            decoded_raw  = decode_obj_tokens_with_mask(obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'],num_classes=dataset_num_class)
+            decoded_raw  = decode_obj_tokens_with_mask(denormalized_obj_tokens, attention_mask, use_objlat=dataset_config['use_objlat'],num_classes=dataset_num_class)
             visualize_result(decoded_recon, raw_data=decoded_raw, room_name=[f_name], save_dir=f'{save_folder}/topdown', batch_idx = 1 )
             exit()
         else:

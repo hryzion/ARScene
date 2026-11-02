@@ -4,12 +4,14 @@ from networks.diffuscene.diffusion_scene_layout_ddpm import DiffusionSceneLayout
 from networks.diffuscene import optimizer_factory, schedule_factory, adjust_learning_rate
 from datasets.Threed_front_dataset import ThreeDFrontDatasetDiffuScene
 from datasets.SceneTokenNormalizer import SceneTokenNormalizer
+from itertools import cycle
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from config import parse_arguments
 import os
+import json
 
 from torchvision import models
 
@@ -21,6 +23,62 @@ def move_all_thing_to(sample_param:dict, device):
     for k, v in sample_param.items():
         if k not in ['room_name', 'room_type','description',"floor_plans",'outer_boxes','floor_centriods','room_shape_polygons']:
             sample_param[k] = v.to(device)
+
+
+def checkpoint_path(save_path):
+    return f"{save_path[:-4]}_latest.ckpt"
+
+
+def resolve_train_stats_file(config, save_folder, normalizer):
+    diffusion_kwargs = config["network"].setdefault("diffusion_kwargs", {})
+    stats_path = os.path.join(save_folder, "diffuscene_train_stats.json")
+    translate = normalizer.stats["translate"]
+    size = normalizer.stats["size"]
+    rotation = normalizer.stats["rotation"]
+    stats = {
+        "bounds_translations": (
+            translate["min"].tolist() + translate["max"].tolist()
+        ),
+        "bounds_sizes": size["min"].tolist() + size["max"].tolist(),
+        "bounds_angles": [
+            float(rotation["min"].reshape(-1)[0]),
+            float(rotation["max"].reshape(-1)[0]),
+        ],
+    }
+    with open(stats_path, "w", encoding="utf-8") as f:
+        json.dump(stats, f, indent=2)
+    diffusion_kwargs["train_stats_file"] = stats_path
+    return stats_path
+
+
+def save_checkpoint(path, model, optimizer, epoch, global_step, configs):
+    torch.save(
+        {
+            "format": "arscene_diffuscene_v1",
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "epoch": epoch,
+            "global_step": global_step,
+            "config": configs,
+        },
+        path,
+    )
+
+
+def load_checkpoint(path, model, optimizer, device):
+    try:
+        ckpt = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        ckpt = torch.load(path, map_location=device)
+
+    if isinstance(ckpt, dict) and "model" in ckpt:
+        model.load_state_dict(ckpt["model"])
+        if optimizer is not None and "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        return int(ckpt.get("epoch", -1)) + 1, int(ckpt.get("global_step", 0))
+
+    model.load_state_dict(ckpt)
+    return 0, 0
 
 
 
@@ -35,7 +93,9 @@ def train_model(
     criterion = None,
     configs = None,
     use_wandb = False,
-    tag = "bedroom"
+    tag = "bedroom",
+    steps_per_epoch=500,
+    resume_checkpoint=None,
 ):     
     if use_wandb:
         WandB.instance().init(
@@ -50,28 +110,38 @@ def train_model(
         )
     lr_scheduler = schedule_factory(config["training"])
     optimizer = optimizer_factory(config["training"], filter(lambda p: p.requires_grad, model.parameters()) ) 
+    val_frequency = int(configs.get("validation", {}).get("frequency", 10))
+    save_frequency = int(configs.get("training", {}).get("save_frequency", 40))
+    start_epoch = 0
     iterations = 0
-    for epoch in range(num_epochs):
+    if resume_checkpoint is not None:
+        start_epoch, iterations = load_checkpoint(resume_checkpoint, model, optimizer, device)
+        print(f"[INFO] Resumed from {resume_checkpoint} at epoch {start_epoch + 1}, step {iterations}", flush=True)
+
+    for epoch in range(start_epoch, num_epochs):
         adjust_learning_rate(lr_scheduler, optimizer, iterations)
         model.train()
-        for b, sample in enumerate(train_loader):
+        for b, sample in zip(range(steps_per_epoch), cycle(train_loader)):
             iterations+=1
             move_all_thing_to(sample, device)
             loss = train_on_batch(model, optimizer=optimizer, sample_params=sample, config=configs)
             StatsLogger.instance().print_progress(epoch+1, b+1, loss)
         StatsLogger.instance().clear()
 
-        model.eval()
-        with torch.no_grad():
-            for b, sample in enumerate(val_loader):
-                move_all_thing_to(sample, device)
-                loss = validate_on_batch(model, sample_params=sample,config=configs)
-                StatsLogger.instance().print_progress(-1, b+1, loss)
-        StatsLogger.instance().clear()
+        if val_frequency > 0 and (epoch + 1) % val_frequency == 0:
+            model.eval()
+            with torch.no_grad():
+                for b, sample in enumerate(val_loader):
+                    move_all_thing_to(sample, device)
+                    loss = validate_on_batch(model, sample_params=sample,config=configs)
+                    StatsLogger.instance().print_progress(-1, b+1, loss)
+            StatsLogger.instance().clear()
         
-        if epoch % 200 == 0:
+        if save_frequency > 0 and (epoch + 1) % save_frequency == 0:
             torch.save(model.state_dict(), f'{save_path[:-4]}_{epoch}.pth')
+            save_checkpoint(f'{save_path[:-4]}_{epoch}.ckpt', model, optimizer, epoch, iterations, configs)
         torch.save(model.state_dict(), f'{save_path[:-4]}_latest.pth')
+        save_checkpoint(checkpoint_path(save_path), model, optimizer, epoch, iterations, configs)
 
 
 if __name__ == "__main__":
@@ -84,6 +154,7 @@ if __name__ == "__main__":
     super_parameters = config['super_parameters']
     BATCH_SIZE = int(super_parameters.get('batch_size', 64))
     NUM_EPOCHS = int(super_parameters.get('epochs', 200))
+    STEPS_PER_EPOCH = int(super_parameters.get('steps_per_epoch', config.get("training", {}).get("steps_per_epoch", 500)))
     LEARNING_RATE = float(super_parameters.get('learning_rate', 1e-4))
 
     # --------------------- model -----------------------
@@ -133,6 +204,18 @@ if __name__ == "__main__":
         # normalizer.fit(train_dataset, mask_key='attention_mask', batch_size=BATCH_SIZE)
         normalizer.fit_atiss(train_dataset, mask_key='attention_mask', batch_size=BATCH_SIZE)
         normalizer.save(f'{dataset_dir}/normalizer_stats_atiss.json')
+    train_stats_file = resolve_train_stats_file(config, save_folder, normalizer)
+    print(
+        "[INFO] DiffuScene room_mask_condition="
+        f"{model_config.get('room_mask_condition', True)}; "
+        f"text_condition={model_config.get('text_condition', False)}; "
+        f"normalize_rotation={normalizer._infer_atiss_normalize_rotation()}; "
+        f"train_stats_file={train_stats_file}",
+        flush=True,
+    )
+
+    with open(os.path.join(save_folder, 'config.yaml'), "w", encoding="utf-8") as f:
+        yaml.dump(config, f, allow_unicode=True)
 
     
     train_dataset.transform = normalizer.transform_atiss
@@ -158,6 +241,9 @@ if __name__ == "__main__":
     ar_loss = None
     # exit()
 
+    resume_checkpoint = args.resume_checkpoint
+    if args.resume and resume_checkpoint is None:
+        resume_checkpoint = checkpoint_path(save_path)
     
     train_model(
         model=diffuscene,
@@ -170,6 +256,7 @@ if __name__ == "__main__":
         criterion=None,
         configs = config,
         use_wandb = args.wandb,
-        tag=tag
+        tag=tag,
+        steps_per_epoch=STEPS_PER_EPOCH,
+        resume_checkpoint=resume_checkpoint,
     )
-

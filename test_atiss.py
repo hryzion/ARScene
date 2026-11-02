@@ -19,6 +19,9 @@ import time
 def load_test_dataset(dataset_dir,dataset_padded_length, num_classes=31):
     return ThreeDFrontDatasetRdm(npz_dir=f'{dataset_dir}',split='test',padded_length = dataset_padded_length, num_cate=num_classes)
 
+def atiss_size_tag(model_config):
+    return model_config.get("size_name")
+
 def main():
     import yaml
     args = parse_arguments()
@@ -51,6 +54,9 @@ def main():
     tag = f'{model_config["type"]}_{dataset_config.get("filter_fn","all")}'
     if not dataset_config.get('use_objlat'):
         tag += '_wo_lat'
+    size_tag = atiss_size_tag(model_config)
+    if size_tag:
+        tag += f'_{size_tag}'
     # --------------------- save -----------------------
 
     save_config = config.get('save', {})
@@ -75,12 +81,18 @@ def main():
         normalizer.load(f'{dataset_dir}/normalizer_stats_atiss.json')
     else:
         raise FileNotFoundError(f"Normalizer stats file not found at {dataset_dir}. Please preprocess the dataset first.")
+    print(
+        "[INFO] ATISS use_room_mask_as_features="
+        f"{model_config.get('use_room_mask_as_features', True)}; "
+        f"normalize_rotation={normalizer._infer_atiss_normalize_rotation()}",
+        flush=True,
+    )
 
     test_dataset = load_test_dataset(dataset_dir,dataset_padded_length,dataset_num_class)
     test_dataset.transform = normalizer.transform_atiss
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, collate_fn=ThreeDFrontDatasetRdm.collate_fn_parallel_transformer)
 
-    feat_extractor = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1).to(device)
+    feat_extractor = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
     feat_extractor.fc = nn.Identity()  # 去掉最后的分类层
     
     atiss = AutoregressiveTransformer(
@@ -88,10 +100,16 @@ def main():
         hidden2output= hidden2output_layer(config, test_dataset.num_cate+2),
         feature_extractor=feat_extractor,
         config=config['network']
-    ).to(device)
+    )
     atiss.eval()
 
-    atiss.load_state_dict(torch.load(f"{save_path}", map_location=device))
+    try:
+        state_dict = torch.load(f"{save_path}", map_location="cpu", weights_only=True)
+    except TypeError:
+        state_dict = torch.load(f"{save_path}", map_location="cpu")
+    atiss.load_state_dict(state_dict)
+    atiss = atiss.to(device)
+    atiss.eval()
 
     total_time = 0.0
     total_scenes = 0
@@ -111,14 +129,16 @@ def main():
 
             text_input = None
 
-            torch.cuda.synchronize()
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
             start_time = time.time()
 
             infer_room = atiss.generate_boxes(
                 room_mask=room_shape,
                 device=device
             )
-            torch.cuda.synchronize()
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
             end_time = time.time()
 
             batch_time = end_time - start_time
@@ -177,7 +197,8 @@ def main():
             # 这里调用可视化函数，可以传入输入和输出
             visualize_result(decoded_infer, raw_data=decoded_raw, room_name=room_name, save_dir=f'{save_folder}/topdown_infer/{args.tag}')
 
-            torch.cuda.synchronize()
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
             end_post_processing = time.time()
             post_processing_time = end_post_processing - end_time
             
