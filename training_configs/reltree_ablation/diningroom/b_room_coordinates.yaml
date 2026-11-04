@@ -1,0 +1,7 @@
+extends: base.yaml
+ablation:
+  variant: b_room_coordinates
+dataset:
+  root: datasets/reltree_ablation/diningroom/b_room_coordinates
+training:
+  output: networks/reltree/runs/ablations/diningroom/b_room_coordinates_seed42_200k

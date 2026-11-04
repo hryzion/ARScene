@@ -1,0 +1,7 @@
+extends: base.yaml
+ablation:
+  variant: a_geometry_tree
+dataset:
+  root: datasets/reltree_ablation/diningroom/a_geometry_tree
+training:
+  output: networks/reltree/runs/ablations/diningroom/a_geometry_tree_seed42_200k

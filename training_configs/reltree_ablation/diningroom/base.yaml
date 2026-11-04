@@ -1,0 +1,46 @@
+# Same neural architecture and optimizer budget as the existing diningroom Full.
+dataset:
+  reference_root: datasets/processed_reltree_diningroom_v2
+  source_root: null  # Resolved from Full's preparation_report, or --source-root.
+  calibration: reference
+model:
+  architecture: room_root_ar_v3
+  width: 768
+  layers: 12
+  heads: 12
+  ff_multiplier: 4
+  dropout: 0.1
+  cond_drop: 0.5
+  max_depth: 32
+  boundary_points: 32
+  boundary_scale_m: 16.0
+  room_size_bins: [256, 256, 256]
+  room_size_maxima: [16.0, 8.0, 16.0]
+  attribute_layers: 2
+  attribute_width: 256
+  attribute_heads: 4
+  attribute_ff_multiplier: 4
+training:
+  device: cuda:0
+  precision: bf16
+  batch_size: 128
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  grad_clip: 1.0
+  condition_dropout_mode: balanced_step
+  epochs: 6000
+  max_steps: 200000
+  checkpoint_every: 100
+  validate_every: 1000
+  log_every: 20
+  initial_evaluation: false
+  seed: 42
+  cpu_threads: 4
+  num_workers: 0
+  sample_count: 4
+  sample_max_objects: 64
+loss:
+  type_weight: 1.0
+  geometry_weights: [1, 1, 1, 1, 1, 1, 1]
+  class_weight: 1.0
+  room_size_weight: 1.0
